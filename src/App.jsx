@@ -796,13 +796,6 @@ export default function App() {
       return { ...data, text: { ...data.text, eng: newEng } };
   }));
  
-  const handleGlobalDataChange = (field, value) => {
-    setGlobalData(prev => ({
-      ...prev,
-      header: { ...prev.header, [field]: value }
-    }));
-  };
- 
   // 💡 [복원] '공통 설정' 탭 전체(헤더/영상/더보기 등)에서 사용하는 범용 업데이트 함수.
   // category가 있으면 그 하위 객체의 필드를, category가 null이면 globalData 최상위 필드를 갱신합니다.
   // (video_file_name, video_aria_label처럼 header 하위가 아닌 필드 갱신에 필요)
@@ -1266,7 +1259,7 @@ export default function App() {
                    <>
                      {/* 교과서 배경화면 매칭 */}
                      <div className="absolute left-[333px] top-[193px] w-[614px] h-[354px] bg-gray-100 rounded-lg overflow-hidden border border-gray-200 flex items-center justify-center">
-                       <img src={activeData.bgSrc || "https://images.unsplash.com/photo-1543002588-bfa74002ed7e?q=80&w=1280"} alt="Background" className="w-full h-full object-cover" />
+                       <img src={activeData.bgSrc || "https://images.unsplash.com/photo-1543002588-bfa74002ed7e?q=80&w=1280"} alt="Background" className="w-full h-full object-fill" />
                      </div>
  
                      {/* 💡 [수정 4] view가 2개 이상일 때, 메인 이미지 좌우에 이전/다음 컷 이동 화살표 + 썸네일 표시 */}
