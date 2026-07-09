@@ -88,7 +88,7 @@ const INIT_ROLEPLAY_DATA = {
   view: "01",
   type: "A",
   dialogues: [
-    { speaker: "A", audio_id: "", blank_audio_id: "", sentence: "Hello.", kor: "안녕.", hasBlank: false, muteTargets: "0" }
+    { speaker: "A", lines: [{ sentence: "Hello.", kor: "안녕.", audio_id: "", hasBlank: false, muteTargets: "0" }] }
   ],
   tableQuiz: {
     headers: [
@@ -104,7 +104,91 @@ const INIT_ROLEPLAY_DATA = {
     rowCount: 3
   }
 };
- 
+
+// 💡 [표 퀴즈 열 너비 자동 계산] 마스터 템플릿(view01.js)의 autoSizeCustomTableColumns()와
+// 동일한 알고리즘을 캔버스 미리보기에 포팅. 헤더/정적 예시 행(첫 번째 데이터 행) 텍스트 중
+// 그 열에서 가장 긴 텍스트를 기준으로 폭을 정하고, 최소/최대 폭으로 clamp한 뒤 표 전체 폭에
+// 맞게 비율대로 재분배한다. (마스터 JS는 실제 렌더링된 DOM을 scrollWidth로 측정한 뒤
+// window.viewport.scale로 나눠 논리적 픽셀로 보정하지만, 여기서는 canvas 2D의 measureText로
+// 직접 논리적 폭을 계산하므로 scale 보정이 필요 없다.)
+const TABLE_QUIZ_MIN_COL_WIDTH = 60;
+const TABLE_QUIZ_MAX_COL_WIDTH = 260;
+const TABLE_QUIZ_CELL_PADDING = 24;
+const TABLE_QUIZ_TOTAL_WIDTH = 530;
+const TABLE_QUIZ_HEADER_FONT = '25px sans-serif';
+const TABLE_QUIZ_STATIC_ROW_FONT = 'bold 22px sans-serif';
+
+let __tableQuizMeasureCanvas = null;
+function measureTextWidthPx(text, font) {
+  if (!__tableQuizMeasureCanvas) __tableQuizMeasureCanvas = document.createElement('canvas');
+  const ctx = __tableQuizMeasureCanvas.getContext('2d');
+  ctx.font = font;
+  return ctx.measureText(text || '').width;
+}
+
+function computeTableQuizColWidths(headers, staticRow) {
+  const colCount = (headers || []).length;
+  if (colCount === 0) return [];
+  const naturalWidths = headers.map((h, i) => {
+    const headerText = h?.text || '';
+    const staticCol = staticRow?.[i];
+    const staticText = typeof staticCol === 'string' ? staticCol : (staticCol?.text || '');
+    const headerW = measureTextWidthPx(headerText, TABLE_QUIZ_HEADER_FONT);
+    const staticW = measureTextWidthPx(staticText, TABLE_QUIZ_STATIC_ROW_FONT);
+    return Math.max(headerW, staticW) + TABLE_QUIZ_CELL_PADDING;
+  });
+  const clampedWidths = naturalWidths.map(w => Math.min(TABLE_QUIZ_MAX_COL_WIDTH, Math.max(TABLE_QUIZ_MIN_COL_WIDTH, w)));
+  const totalClamped = clampedWidths.reduce((a, b) => a + b, 0) || 1;
+  return clampedWidths.map(w => (w / totalClamped) * TABLE_QUIZ_TOTAL_WIDTH);
+}
+
+// 💡 [zipper 실측 분리 로직 공용화] 문장이 컨테이너 폭에 걸려 여러 줄로 꺾일 때, 그 줄 너비만큼만
+// 텍스트를 잘라서 "첫 줄"과 "나머지"로 나눈다. Understand의 placeZipperKorean() 포팅 코드와 동일한
+// 원리(숨겨진 probe 요소에 실제로 렌더링해보고 Range.getClientRects()로 줄바꿈 지점을 실측)이며,
+// 롤플레이 A형의 여러 줄(lines) 한글 배치에서도 재사용하기 위해 폰트 파라미터를 받는 공용 함수로 분리했다.
+function splitTextForRowWidth(text, widthPx, fontFamily, fontSizePx, lineHeight, wordBreak) {
+  const probe = document.createElement('div');
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  probe.style.left = '-9999px';
+  probe.style.top = '0';
+  probe.style.width = `${widthPx}px`;
+  probe.style.whiteSpace = 'normal';
+  probe.style.fontFamily = fontFamily;
+  probe.style.fontSize = `${fontSizePx}px`;
+  probe.style.lineHeight = String(lineHeight);
+  probe.style.wordBreak = wordBreak;
+  probe.textContent = text;
+  document.body.appendChild(probe);
+
+  let result = { firstLine: text, rest: '' };
+  const textNode = probe.firstChild;
+  if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+    const range = document.createRange();
+    range.selectNodeContents(probe);
+    const rects = range.getClientRects();
+    if (rects.length > 1) {
+      const firstTop = rects[0].top;
+      const threshold = rects[0].height / 2;
+      let splitIndex = -1;
+      for (let i = 1; i <= text.length; i++) {
+        const r = document.createRange();
+        r.setStart(textNode, i - 1);
+        r.setEnd(textNode, i);
+        const cr = r.getClientRects()[0];
+        if (cr && cr.top > firstTop + threshold) { splitIndex = i - 1; break; }
+      }
+      if (splitIndex > 0) {
+        const firstLine = text.slice(0, splitIndex).replace(/\s+$/, '');
+        const rest = text.slice(splitIndex).replace(/^\s+/, '');
+        if (firstLine) result = { firstLine, rest };
+      }
+    }
+  }
+  probe.remove();
+  return result;
+}
+
 // 💡 롤플레이 (B형) 씬 기반 초기 데이터 모형 (표 퀴즈 없음)
 const INIT_ROLEPLAY_B_SCENES = [
   {
@@ -166,8 +250,9 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [contentType, setContentType] = useState('understand');
   
-  const [croppedViews, setCroppedViews] = useState([]); 
+  const [croppedViews, setCroppedViews] = useState([]);
   const [extractedDialogues, setExtractedDialogues] = useState([]);
+  const [extractedTableQuiz, setExtractedTableQuiz] = useState(null);
  
   const dragItem = useRef(null);
   const dragOverItem = useRef(null);
@@ -194,7 +279,11 @@ export default function App() {
   const [serverStatus, setServerStatus] = useState('checking'); // 'checking' | 'online' | 'offline'
   const zipperFlowRef = useRef(null);
   const [zipperKorFragments, setZipperKorFragments] = useState([]);
-  
+  // 💡 [롤플레이 A형] 한 턴 안 여러 줄(lines)의 한글을, zipper와 동일한 원리로 각 줄이 실제로
+  // 렌더링된 위치(offsetLeft/Top)를 실측해서 그 줄 바로 아래에 절대위치로 배치하기 위한 참조/상태.
+  const rolePlayScriptRef = useRef(null);
+  const [roleplayKorFragments, setRoleplayKorFragments] = useState([]);
+
   const loadJSZip = () => {
     return new Promise((resolve, reject) => {
       if (window.JSZip) {
@@ -339,7 +428,6 @@ export default function App() {
                   sentence: item.sentence || item.en || "",
                   kor: item.kor || item.ko || "",
                   audio_id: "",
-                  blank_audio_id: "",
                   hasBlank: false,
                   muteTargets: "0"
               }));
@@ -348,6 +436,17 @@ export default function App() {
               dials = parsedType === 'roleplay_b' ? INIT_ROLEPLAY_B_SCENES[0].dialogues : INIT_ROLEPLAY_DATA.dialogues;
           }
           setExtractedDialogues(dials);
+
+          // 💡 롤플레이 A형이고, 이미지에 표 퀴즈가 함께 있으면 헤더/고정 행 텍스트도 같이 읽어온다.
+          // 오디오 ID는 이미지만으로 알 수 없어 항상 빈 값으로 두고(사용자가 직접 입력), rowCount(학생이
+          // 채울 빈칸 행 개수)도 이미지에서 신뢰성 있게 추론하기 어려워 건드리지 않는다(기본값 3 유지).
+          if (parsedType === 'roleplay' && aiData.tableQuiz && Array.isArray(aiData.tableQuiz.headers) && aiData.tableQuiz.headers.length > 0) {
+              const extractedHeaders = aiData.tableQuiz.headers.map(h => ({ text: String(h || ''), audioId: '' }));
+              const extractedStaticRow = extractedHeaders.map((_, i) => ({ text: String((aiData.tableQuiz.staticRow || [])[i] || ''), audioId: '' }));
+              setExtractedTableQuiz({ headers: extractedHeaders, staticRow: extractedStaticRow });
+          } else {
+              setExtractedTableQuiz(null);
+          }
       } else {
           const processedViews = [];
           const viewsArray = Array.isArray(aiData?.views) ? aiData.views : (Array.isArray(aiData) ? aiData : []);
@@ -525,7 +624,20 @@ export default function App() {
       }));
       setPageData(initialScenes);
     } else if (contentType === 'roleplay') {
-      setPageData([{ ...INIT_ROLEPLAY_DATA, dialogues: extractedDialogues.length > 0 ? extractedDialogues : INIT_ROLEPLAY_DATA.dialogues, id: `box_${Date.now()}_roleplay` }]);
+      // 💡 extractedDialogues는 A/B형이 공유하는 평평한 중간 포맷(1항목=1줄)이라, 롤플레이 A형이 쓰는
+      // "턴 안에 여러 줄" 중첩 구조({ speaker, lines: [...] })로 감싸서 넣어준다.
+      const initialDialogues = extractedDialogues.length > 0
+        ? extractedDialogues.map(item => ({
+            speaker: item.speaker || "A",
+            lines: [{ sentence: item.sentence || "", kor: item.kor || "", audio_id: item.audio_id || "", hasBlank: item.hasBlank || false, muteTargets: item.muteTargets !== undefined ? item.muteTargets : "0" }]
+          }))
+        : INIT_ROLEPLAY_DATA.dialogues;
+      // 💡 이미지에서 표 퀴즈 헤더/고정 행 텍스트를 읽어냈으면 그걸 쓰고, 못 읽었으면(표가 없거나
+      // AI가 인식 못함) 기본 예시(INIT_ROLEPLAY_DATA.tableQuiz)로 채워서 편집 패널에서 바로 고칠 수 있게 한다.
+      const initialTableQuiz = extractedTableQuiz
+        ? { ...INIT_ROLEPLAY_DATA.tableQuiz, headers: extractedTableQuiz.headers, staticRow: extractedTableQuiz.staticRow }
+        : INIT_ROLEPLAY_DATA.tableQuiz;
+      setPageData([{ ...INIT_ROLEPLAY_DATA, dialogues: initialDialogues, tableQuiz: initialTableQuiz, id: `box_${Date.now()}_roleplay` }]);
     } else {
       const initialData = (croppedViews || []).map((crop, idx) => {
         const tpl = TEMPLATE_UNDERSTAND[idx] || {
@@ -586,7 +698,10 @@ export default function App() {
   };
  
   const activeData = pageData[activeViewIdx];
- 
+
+  // 💡 롤플레이 A형 표 퀴즈 열 너비: 헤더/정적 예시 행 텍스트 길이에 맞춰 매 렌더링마다 재계산.
+  const tableQuizColWidths = computeTableQuizColWidths(activeData?.tableQuiz?.headers || [], activeData?.tableQuiz?.staticRow || []);
+
   // 💡 [수정 10] 실제 마스터 템플릿(view0X.js)의 placeZipperKorean() 로직을 그대로 포팅.
   // zipper 문장들이 문장 경계와 상관없이 자연스럽게 흐르며 줄바꿈될 때, 각 문장(.zline-sentence-el)이
   // 실제로 몇 줄에 걸치는지 getClientRects()로 측정해서, 그 줄마다 한글 해석을 알맞은 만큼 나눠
@@ -685,7 +800,78 @@ export default function App() {
       document.fonts.ready.then(() => requestAnimationFrame(measure));
     }
   }, [activeData, scale, contentType]);
- 
+
+  // 💡 [롤플레이 A형] 한 턴(같은 화자) 안에 여러 줄이 있을 때, 각 줄의 한글을 그 줄 바로 아래에
+  // 배치. zipper와 동일하게 실제 렌더링된 DOM 위치를 측정해서 절대위치로 끼워넣는다 — 브라우저가
+  // 각 줄(.rp-line-eng)을 컨테이너 폭에 맞춰 자동 줄바꿈하므로, 그려보기 전에는 위치를 알 수 없다.
+  useLayoutEffect(() => {
+    if (contentType !== 'roleplay' || !activeData) {
+      setRoleplayKorFragments(prev => (prev.length > 0 ? [] : prev));
+      return;
+    }
+    const containerEl = rolePlayScriptRef.current;
+    if (!containerEl) return;
+
+    const measure = () => {
+      if (!containerEl.isConnected) return;
+      const s = scale || 1;
+      const newFragments = [];
+
+      containerEl.querySelectorAll('[data-turn-idx]').forEach((turnEl) => {
+        const dialIdx = Number(turnEl.dataset.turnIdx);
+        const turn = activeData.dialogues?.[dialIdx];
+        if (!turn) return;
+        const lines = (turn.lines && turn.lines.length > 0)
+          ? turn.lines
+          : [{ sentence: turn.sentence || '', kor: turn.kor || '' }];
+
+        const contentEl = turnEl.querySelector('.rp-turn-content');
+        if (!contentEl) return;
+        const contentRect = contentEl.getBoundingClientRect();
+
+        turnEl.querySelectorAll('.rp-line-eng').forEach((lineEl, lineIdx) => {
+          const line = lines[lineIdx];
+          if (!line || !line.kor) return;
+          // 💡 getBoundingClientRect()는 문장이 2줄로 꺾일 때 두 줄을 하나로 뭉뚱그린 박스를 줘서
+          // 위치가 어긋난다. getClientRects()로 실제 줄마다 박스를 따로 받아, zipper처럼 한글도
+          // 그만큼 나눠서 각 줄 바로 아래에 배치한다.
+          const rects = lineEl.getClientRects();
+          if (!rects || rects.length === 0) return;
+
+          // 💡 마스터(view01.js placeMultiLineTranslation)와 동일한 수치로 맞춤:
+          // left는 +3px 보정(TRANSLATION_LEFT_NUDGE), top은 JS의 +18px과 .translation span의
+          // CSS margin-top:10px(절대배치 요소라도 margin-top만큼 더 밀림)을 합친 +28px, 각 줄의
+          // 사용 가능 너비는 컨테이너 남은 폭이 아니라 그 줄(rect) 자체의 렌더링 폭을 기준으로 한다.
+          let remainder = line.kor;
+          for (let i = 0; i < rects.length && remainder; i++) {
+            const rect = rects[i];
+            const left = (rect.left - contentRect.left) / s + 3;
+            const availWidth = Math.max(60, rect.width / s);
+            const isLastRow = (i === rects.length - 1);
+            let text;
+            if (isLastRow) {
+              text = remainder;
+              remainder = '';
+            } else {
+              const { firstLine, rest } = splitTextForRowWidth(remainder, availWidth, 'NanumGothicBold, sans-serif', 15, 1.8, 'keep-all');
+              text = firstLine;
+              remainder = rest;
+            }
+            const top = (rect.top - contentRect.top) / s + 28;
+            newFragments.push({ key: `${dialIdx}-${lineIdx}-${i}`, turnIdx: dialIdx, left, top, text, maxWidth: availWidth });
+          }
+        });
+      });
+
+      setRoleplayKorFragments(newFragments);
+    };
+
+    measure();
+    if (document.fonts && document.fonts.status !== 'loaded') {
+      document.fonts.ready.then(() => requestAnimationFrame(measure));
+    }
+  }, [activeData, scale, contentType]);
+
   const handleMouseDown = (e, id) => {
     if (contentType === 'roleplay' || contentType === 'roleplay_b') return;
     e.preventDefault();
@@ -769,9 +955,43 @@ export default function App() {
   const addSentence = () => setPageData(prev => (prev || []).map((data, idx) => {
      if (idx !== activeViewIdx) return data;
      if (contentType === 'roleplay') {
-         return { ...data, dialogues: [...(data.dialogues || []), { speaker: "A", audio_id: "", blank_audio_id: "", sentence: "", kor: "", hasBlank: false, muteTargets: "0" }] };
+         return { ...data, dialogues: [...(data.dialogues || []), { speaker: "A", lines: [{ sentence: "", kor: "", audio_id: "", hasBlank: false, muteTargets: "0" }] }] };
      }
      return { ...data, text: { ...data.text, eng: [...(data.text?.eng || []), { sentence: "", kor: "", audio_id: "" }] } };
+  }));
+
+  // 💡 [롤플레이 A형 전용] 한 턴(같은 화자) 안에 오디오/빈칸이 독립적인 줄을 여러 개 담을 수 있도록
+  // dialogues[i].lines 배열 단위로 조작하는 함수들. 턴 자체의 추가/삭제/화자 변경은 기존 addSentence/
+  // removeSentence/handleSentenceChange가 그대로 담당한다.
+  const handleDialogueLineChange = (dialIdx, lineIdx, field, value) => setPageData(prev => (prev || []).map((data, idx) => {
+      if (idx !== activeViewIdx || contentType !== 'roleplay') return data;
+      const newDialogues = [...(data.dialogues || [])];
+      const turn = newDialogues[dialIdx];
+      if (!turn) return data;
+      const newLines = [...(turn.lines || [])];
+      newLines[lineIdx] = { ...newLines[lineIdx], [field]: value };
+      newDialogues[dialIdx] = { ...turn, lines: newLines };
+      return { ...data, dialogues: newDialogues };
+  }));
+
+  const addDialogueLine = (dialIdx) => setPageData(prev => (prev || []).map((data, idx) => {
+      if (idx !== activeViewIdx || contentType !== 'roleplay') return data;
+      const newDialogues = [...(data.dialogues || [])];
+      const turn = newDialogues[dialIdx];
+      if (!turn) return data;
+      newDialogues[dialIdx] = { ...turn, lines: [...(turn.lines || []), { sentence: "", kor: "", audio_id: "", hasBlank: false, muteTargets: "0" }] };
+      return { ...data, dialogues: newDialogues };
+  }));
+
+  const removeDialogueLine = (dialIdx, lineIdx) => setPageData(prev => (prev || []).map((data, idx) => {
+      if (idx !== activeViewIdx || contentType !== 'roleplay') return data;
+      const newDialogues = [...(data.dialogues || [])];
+      const turn = newDialogues[dialIdx];
+      if (!turn) return data;
+      const newLines = (turn.lines || []).filter((_, i) => i !== lineIdx);
+      if (newLines.length === 0) return data; // 턴에는 최소 1줄이 남아있어야 함(0줄이면 턴 삭제를 이용)
+      newDialogues[dialIdx] = { ...turn, lines: newLines };
+      return { ...data, dialogues: newDialogues };
   }));
   
   const addLine = (engIdx) => setPageData(prev => (prev || []).map((data, idx) => {
@@ -913,46 +1133,60 @@ export default function App() {
  
         if (contentType === 'roleplay') {
             const rowCount = Number(pageData[0]?.tableQuiz?.rowCount || 3);
- 
+            // 💡 [자동 생성] hiddenText는 공통 설정 탭의 '지시문(instruction)'을 그대로 재사용해 구성.
+            // 레슨마다 달라지는 주제 설명은 instruction에 이미 담겨 있으므로, 여기에 고정 안내 문구만 덧붙인다.
+            const roleplayInstruction = String(globalData.header.instruction || "").trim();
+            const roleplayHiddenText = roleplayInstruction
+                ? `${roleplayInstruction} 롤플레이 활동이 어려울 경우, 선생님께 도움을 요청해 보세요.`
+                : "롤플레이 활동이 어려울 경우, 선생님께 도움을 요청해 보세요.";
+
             const roleplayExportData = {
                 pageInfo: {
-                    hiddenText: "평소 즐겨 하는 여가 활동을 짝과 함께 말해보는 활동입니다. 롤플레이 활동이 어려울 경우, 선생님께 도움을 요청해 보세요.", // 더보기 내용이 제거되었으므로 기본값만 유지
+                    hiddenText: roleplayHiddenText,
                     title: {
                         head: String(globalData.header.letter || ""),
                         text: String(globalData.header.text || ""),
                         color: String(globalData.header.color || "")
                     },
-                    instruction: String(globalData.header.instruction || "")
+                    instruction: roleplayInstruction
                 },
                 howToPlay: [
                     { step: 1, tail: "left", lines: ["버튼을 눌러 예시 대화를", "확인하고 이야기해 보세요."] },
                     { step: 2, tail: "top", lines: ["역할을 선택해 보세요."] },
                     { step: 3, tail: "bottom", lines: ["내가 맡은 역할의 대사를", "가리고 말해 보세요."] },
-                    { step: 4, tail: "top", lines: ["예시 대화를 참고하여 친구들과 대화한 후,", "표에 친구들의 여가 활동에 대해 써 보세요."] }
+                    // 💡 특정 레슨 주제(예: 여가 활동)를 가정한 문구 대신, 모든 콘텐츠에 공통 적용 가능한 범용 문구로 변경.
+                    { step: 4, tail: "top", lines: ["예시 대화를 참고하여 친구들과 대화한 후,", "표에 알맞은 내용을 써 보세요."] }
                 ],
                 rolePlay: {
                     toggleBtn: { ariaLabel: "클릭 시 대화창 바꾸기" },
                     // 🚀 [추출 최적화] 불필요한 구형 껍데기(blankData 등) 완벽 제거 및 순수 Flat 포맷 내보내기
+                    // 💡 한 턴(같은 화자) 안에 오디오/빈칸이 독립적인 줄이 여러 개 있을 수 있으므로,
+                    // turn.lines 배열을 강제로 1개로 접지 않고 있는 그대로 매핑한다.
                     dialogues: (pageData[0]?.dialogues || []).map(item => {
-                        const lineObj = {
-                            hasBlank: item.hasBlank,
-                            audio: String(item.audio_id || ""),
-                            eng: String(item.sentence || ""),
-                            kor: String(item.kor || "")
-                        };
- 
-                        if (item.hasBlank) {
-                            // [신규] 별도 묵음 오디오 파일명 추출
-                            if (item.blank_audio_id) {
-                                lineObj.blankAudio = item.blank_audio_id;
+                        const rawLines = (item.lines && item.lines.length > 0)
+                            ? item.lines
+                            : [{ sentence: item.sentence, kor: item.kor, audio_id: item.audio_id, hasBlank: item.hasBlank, muteTargets: item.muteTargets }];
+
+                        const lines = rawLines.map(line => {
+                            const lineObj = {
+                                hasBlank: line.hasBlank,
+                                audio: String(line.audio_id || ""),
+                                eng: String(line.sentence || ""),
+                                kor: String(line.kor || "")
+                            };
+
+                            if (line.hasBlank) {
+                                // 💡 마스터 템플릿은 blankAudio 필드를 읽지 않고, "{audio_id}_묵음.mp3"라는
+                                // 고정 네이밍 규칙으로 묵음 파일을 찾는다(view01.html 오디오 경로 생성 로직 참고).
+                                lineObj.muteTargets = line.muteTargets !== undefined && String(line.muteTargets).trim() !== ""
+                                    ? String(line.muteTargets).split(',').map(s => Number(s.trim()))
+                                    : [0];
                             }
- 
-                            lineObj.muteTargets = item.muteTargets !== undefined && String(item.muteTargets).trim() !== ""
-                                ? String(item.muteTargets).split(',').map(s => Number(s.trim()))
-                                : [0];
-                        }
- 
-                        return { speaker: String(item.speaker || "A"), lines: [lineObj] };
+
+                            return lineObj;
+                        });
+
+                        return { speaker: String(item.speaker || "A"), lines };
                     })
                 },
                 tableQuiz: {
@@ -1442,20 +1676,37 @@ export default function App() {
                         ) : (
                           /* 기존 롤플레이 A형 레이아웃 */
                           <>
-                             <div style={{ position: 'absolute', left: 40, top: 256, width: 660, height: 340, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0', padding: '32px 28px', overflowY: 'auto' }}>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '25px' }}>
-                                   {(activeData.dialogues || []).map((item, idx) => {
-                                      let displayEng = item.sentence || "영어 대사";
-                                      if (item.hasBlank && displayEng.includes('[')) {
-                                         displayEng = displayEng.replace(/\[(.*?)\]/g, "<span class='emp col-0' style='color:#b42c13; display: inline; white-space: normal; word-break: break-word; overflow-wrap: break-word;'>$1</span>");
-                                      }
- 
+                             {/* 💡 마스터(view01.js buildRolePlay) 구조: .role-play-script(padding: 0 30px, 스크롤바용 padding-right:10px) 안에
+                                  JS가 새로 만드는 scrollBox(paddingTop/Bottom:15px)가 중첩됨 → 합쳐서 top/bottom 15px, left 30px, right 10px.
+                                  내부 콘텐츠는 minHeight:100%+justifyContent:center로 짧을 때 수직 중앙 정렬됨. 턴 사이 간격은
+                                  .talk{margin-bottom:18px} 하나뿐(별도 gap 없음 — gap을 같이 쓰면 간격이 두 배로 겹친다). */}
+                             <div ref={rolePlayScriptRef} style={{ position: 'absolute', left: 40, top: 256, width: 660, height: 340, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0', padding: '15px 10px 15px 30px', overflowY: 'auto' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%', justifyContent: 'center' }}>
+                                   {(activeData.dialogues || []).map((turn, dialIdx) => {
+                                      const lines = (turn.lines && turn.lines.length > 0)
+                                         ? turn.lines
+                                         : [{ sentence: turn.sentence || '', kor: turn.kor || '', hasBlank: turn.hasBlank || false }];
+
                                       return (
-                                         <div key={idx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', marginBottom: '18px' }}>
-                                            <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.8' }}>{String(item.speaker || '')}:</div>
-                                            <div style={{ flex: 1, position: 'relative', paddingRight: '47px' }}>
-                                               <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'break-word' }} dangerouslySetInnerHTML={{__html: displayEng}} />
-                                               <div style={{ fontSize: '15px', color: '#06c', marginTop: '5px', fontWeight: 'bold', lineHeight: '1.8' }}>{String(item.kor || "")}</div>
+                                         <div key={dialIdx} data-turn-idx={dialIdx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', marginBottom: '18px' }}>
+                                            <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.8' }}>{String(turn.speaker || '')}:</div>
+                                            <div className="rp-turn-content" style={{ flex: 1, position: 'relative', paddingRight: '47px', minHeight: 40 }}>
+                                               <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                                  {lines.map((line, lineIdx) => {
+                                                     let displayEng = line.sentence || "영어 대사";
+                                                     if (line.hasBlank && displayEng.includes('[')) {
+                                                        displayEng = displayEng.replace(/\[(.*?)\]/g, "<span class='emp col-0' style='color:#b42c13;'>$1</span>");
+                                                     }
+                                                     return (
+                                                        <React.Fragment key={lineIdx}>
+                                                           <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: displayEng }} />{' '}
+                                                        </React.Fragment>
+                                                     );
+                                                  })}
+                                               </div>
+                                               {roleplayKorFragments.filter(f => f.turnIdx === dialIdx).map(f => (
+                                                  <div key={f.key} style={{ position: 'absolute', left: f.left, top: f.top, maxWidth: f.maxWidth, fontSize: '15px', color: '#06c', fontWeight: 'bold', lineHeight: '1.8' }}>{f.text}</div>
+                                               ))}
                                             </div>
                                          </div>
                                       );
@@ -1465,11 +1716,11 @@ export default function App() {
  
                              {/* Table Quiz */}
                              <div style={{ position: 'absolute', left: 710, top: 255, width: 530, height: 'auto', border: '1px solid #a0d0d9', borderRadius: '16px', backgroundColor: '#fff', overflow: 'hidden' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center' }}>
+                                <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', textAlign: 'center' }}>
                                    <thead>
                                       <tr>
                                          {(activeData.tableQuiz?.headers || []).map((h, i) => (
-                                            <th key={i} style={{ backgroundColor: '#84d8e5', height: 50, borderRight: i < 2 ? '1px solid #fff' : 'none', fontSize: '25px', color: '#20505e', fontFamily: 'sans-serif' }}>
+                                            <th key={i} style={{ width: tableQuizColWidths[i], backgroundColor: '#84d8e5', height: 50, borderRight: i < 2 ? '1px solid #fff' : 'none', fontSize: '25px', color: '#20505e', fontFamily: 'sans-serif', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 6px' }}>
                                                {String(h.text || '')}
                                             </th>
                                          ))}
@@ -1481,7 +1732,7 @@ export default function App() {
                                             const textVal = typeof col === 'string' ? col : (col.text || '');
                                             const audioVal = typeof col === 'string' ? '' : (col.audioId || '');
                                             return (
-                                               <td key={i} style={{ height: 50, borderRight: i < 2 ? '1px solid #a0d0d9' : 'none', borderBottom: '1px solid #a0d0d9', fontWeight: 'bold', color: textVal ? '#4b5563' : '#c1c7d3', fontSize: '22px', position: 'relative' }}>
+                                               <td key={i} style={{ width: tableQuizColWidths[i], height: 50, borderRight: i < 2 ? '1px solid #a0d0d9' : 'none', borderBottom: '1px solid #a0d0d9', fontWeight: 'bold', color: textVal ? '#4b5563' : '#c1c7d3', fontSize: '22px', position: 'relative', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '0 6px' }}>
                                                   {i === 0 && <span style={{position: 'absolute', top: '15px', left: '-5px', backgroundColor: '#b5eae6', borderRadius: '10px', padding: '2px 6px', color: '#008b8b', fontSize: '12px', fontWeight: 'bold'}}>e.g.</span>}
                                                   {String(textVal || INIT_ROLEPLAY_DATA.tableQuiz.staticRow[i]?.text || "예시")}
                                                   {audioVal && <span style={{fontSize:'12px', position: 'absolute', right: '5px', bottom: '5px'}}>🔊</span>}
@@ -1496,7 +1747,7 @@ export default function App() {
                                                const headerText = h.text || (cIdx + 1 + "열");
                                                const autoAriaLabel = `${rIdx + 1}번째 줄 ${headerText} 입력칸`;
                                                return (
-                                                  <td key={cIdx} style={{ height: 50, borderRight: cIdx < 2 ? '1px solid #a0d0d9' : 'none', borderBottom: rIdx < (activeData.tableQuiz?.rowCount || 3) - 1 ? '1px solid #a0d0d9' : 'none' }}>
+                                                  <td key={cIdx} style={{ width: tableQuizColWidths[cIdx], height: 50, borderRight: cIdx < 2 ? '1px solid #a0d0d9' : 'none', borderBottom: rIdx < (activeData.tableQuiz?.rowCount || 3) - 1 ? '1px solid #a0d0d9' : 'none' }}>
                                                      <div style={{ fontSize: '15px', color: '#c1c7d3', minHeight: '30px', display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center' }}>{autoAriaLabel}</div>
                                                   </td>
                                                );
@@ -1515,7 +1766,6 @@ export default function App() {
                         </div>
  
                         <div style={{ position: 'absolute', bottom: 57, right: 40, display: 'flex', gap: '5px' }}>
-                           <button style={{ height: 40, padding: '0 15px', backgroundColor: '#ee6e32', color: '#fff', border: 'none', borderRadius: '50px', fontSize: '18px', fontWeight: 'bold' }}>다시 하기</button>
                            <button style={{ height: 40, padding: '0 15px', backgroundColor: '#7177e0', color: '#fff', border: 'none', borderRadius: '50px', fontSize: '18px', fontWeight: 'bold' }}>저장</button>
                         </div>
                      </div>
@@ -1717,55 +1967,83 @@ export default function App() {
                         <div className="border-b border-purple-200 pb-2 mb-3">
                            <h3 className="font-bold text-sm text-purple-800">📝 대화 스크립트 작성</h3>
                         </div>
+                        <ul className="text-[10px] leading-relaxed text-gray-400 -mt-2 mb-3 space-y-0.5 list-disc list-inside">
+                           <li>실제 콘텐츠에서는 하단의 [저장] 버튼을 누르면 그 자리에서 [다시 하기] 버튼으로 바뀌어 나타납니다. 캔버스는 최초 진입 상태([저장]만 표시)만 보여줍니다.</li>
+                           <li>화면 하단 스크린리더용 안내문(hiddenText)은 "공통 설정" 탭의 지시문(instruction)을 그대로 재사용해 자동으로 만들어집니다. 지시문을 수정하면 함께 바뀝니다.</li>
+                        </ul>
                         <div className="space-y-4">
-                           {(activeData.dialogues || []).map((item, engIdx) => (
-                             <div key={engIdx} className={`p-3 border rounded-xl relative group shadow-sm transition-colors ${item.hasBlank ? 'bg-indigo-50 border-indigo-200' : 'bg-gray-50 border-gray-200'}`}>
-                                <button onClick={() => removeSentence(engIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
-                                
-                                <div className="flex justify-between items-center mb-3">
-                                   <div className="flex items-center gap-2">
-                                      <select value={item.speaker || 'A'} onChange={e => handleSentenceChange(engIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-purple-900 rounded bg-purple-100 border border-purple-300 outline-none cursor-pointer">
-                                         <option value="A">화자 A</option>
-                                         <option value="B">화자 B</option>
-                                      </select>
-                                   </div>
-                                   <div className="flex items-center gap-3">
-                                      <label className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 cursor-pointer bg-indigo-100 px-2 py-1 rounded">
-                                        <input type="checkbox" checked={item.hasBlank || false} onChange={e => handleSentenceChange(engIdx, 'hasBlank', e.target.checked)} className="cursor-pointer" />
-                                        빈칸/강조 지정
-                                      </label>
-                                   </div>
+                           {(activeData.dialogues || []).map((turn, dialIdx) => {
+                              const lines = (turn.lines && turn.lines.length > 0) ? turn.lines : [{ sentence: turn.sentence || '', kor: turn.kor || '', audio_id: turn.audio_id || '', hasBlank: turn.hasBlank || false, muteTargets: turn.muteTargets }];
+                              return (
+                             <div key={dialIdx} className="p-3 border rounded-xl relative group shadow-sm bg-white border-purple-200 space-y-3">
+                                <button onClick={() => removeSentence(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 턴(화자 전체) 삭제">✕</button>
+
+                                <div className="flex items-center gap-2">
+                                   <select value={turn.speaker || 'A'} onChange={e => handleSentenceChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-purple-900 rounded bg-purple-100 border border-purple-300 outline-none cursor-pointer">
+                                      <option value="A">화자 A</option>
+                                      <option value="B">화자 B</option>
+                                   </select>
+                                   <span className="text-[10px] text-gray-400">이 턴 안에서 여러 줄(각각 별도 오디오)을 이어서 말하게 할 수 있습니다.</span>
                                 </div>
- 
-                                <label className="block text-emerald-700 text-[11px] font-bold mb-1">
-                                  영어 대사 <span className="text-gray-400 font-normal ml-1">({item.hasBlank ? "빈칸/강조 부분은 [대괄호]로 묶어주세요" : "일반 텍스트 입력"})</span>
-                                </label>
-                                <textarea value={item.sentence || ''} onChange={e => handleSentenceChange(engIdx, 'sentence', e.target.value)} className={`w-full p-2 text-xs border rounded-lg mb-2 outline-none resize-none h-16 ${item.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`} placeholder={item.hasBlank ? "예: I enjoy [playing basketball]." : "영어 대사 입력"} />
-                                
-                                {item.hasBlank && (
-                                   <div className="mb-2 p-2 bg-indigo-100/50 border border-indigo-200 rounded-lg">
-                                      <label className="block text-indigo-800 text-[11px] font-bold mb-1">
-                                         오디오 묵음 타겟 (muteTargets) <span className="text-indigo-500 font-normal ml-1">※ 싱크 인덱스 입력</span>
-                                      </label>
-                                      <input type="text" value={item.muteTargets !== undefined ? item.muteTargets : '0'} onChange={e => handleSentenceChange(engIdx, 'muteTargets', e.target.value)} className="w-full p-1.5 text-xs border border-indigo-300 rounded outline-none font-mono bg-white" placeholder="예: 0 또는 0, 1" />
-                                   </div>
-                                )}
- 
-                                <label className="block text-emerald-700 text-[11px] font-bold mb-1">한글 해석 (kor)</label>
-                                <textarea value={item.kor || ''} onChange={e => handleSentenceChange(engIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력 (<br> 사용 가능)" />
-                                
-                                <label className="block text-emerald-700 text-[11px] font-bold mb-1">오디오 ID</label>
-                                <input type="text" value={item.audio_id || ''} onChange={e => handleSentenceChange(engIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L1_012_CommB_eg_05" />
+
+                                {lines.map((line, lineIdx) => (
+                                  <div key={lineIdx} className={`p-2.5 border rounded-lg relative group/line ${line.hasBlank ? 'bg-indigo-50 border-indigo-200' : 'bg-gray-50 border-gray-200'}`}>
+                                     {lines.length > 1 && (
+                                        <button onClick={() => removeDialogueLine(dialIdx, lineIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover/line:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 줄만 삭제">✕</button>
+                                     )}
+                                     <div className="flex justify-between items-center mb-2">
+                                        <span className="text-[10px] font-bold text-gray-500">{lineIdx + 1}번째 줄</span>
+                                        <label className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 cursor-pointer bg-indigo-100 px-2 py-1 rounded">
+                                          <input type="checkbox" checked={line.hasBlank || false} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'hasBlank', e.target.checked)} className="cursor-pointer" />
+                                          빈칸/강조 지정
+                                        </label>
+                                     </div>
+
+                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">
+                                       영어 대사 <span className="text-gray-400 font-normal ml-1">({line.hasBlank ? "빈칸/강조 부분은 [대괄호]로 묶어주세요" : "일반 텍스트 입력"})</span>
+                                     </label>
+                                     <textarea value={line.sentence || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', e.target.value)} className={`w-full p-2 text-xs border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`} placeholder={line.hasBlank ? "예: I enjoy [playing basketball]." : "영어 대사 입력"} />
+
+                                     {line.hasBlank && (
+                                        <div className="mb-2 p-2 bg-indigo-100/50 border border-indigo-200 rounded-lg">
+                                           <label className="block text-indigo-800 text-[11px] font-bold mb-1">
+                                              오디오 묵음 타겟 (muteTargets) <span className="text-indigo-500 font-normal ml-1">※ 싱크 인덱스 입력</span>
+                                           </label>
+                                           <input type="text" value={line.muteTargets !== undefined ? line.muteTargets : '0'} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'muteTargets', e.target.value)} className="w-full p-1.5 text-xs border border-indigo-300 rounded outline-none font-mono bg-white" placeholder="예: 0 또는 0, 1" />
+                                           <p className="mt-1.5 text-[10px] leading-relaxed text-indigo-700">
+                                              ⚠️ 별도 파일명을 지정하는 항목이 아닙니다. 마스터 템플릿은 아래 "오디오 ID"와 같은 이름에{' '}
+                                              <span className="font-mono font-bold">_묵음</span>만 붙인 파일을 자동으로 찾습니다.
+                                              {line.audio_id ? <> 예: <span className="font-mono font-bold">{line.audio_id}_묵음.mp3</span></> : ' 예: L1_012_CommB_eg_05_묵음.mp3'}
+                                              {' '}파일을 미디어 폴더에 함께 준비해 주세요.
+                                           </p>
+                                        </div>
+                                     )}
+
+                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">한글 해석 (kor)</label>
+                                     <textarea value={line.kor || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력" />
+
+                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">오디오 ID</label>
+                                     <input type="text" value={line.audio_id || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L1_012_CommB_eg_05" />
+                                  </div>
+                                ))}
+
+                                <button onClick={() => addDialogueLine(dialIdx)} className="w-full py-1.5 border border-dashed border-indigo-300 text-indigo-600 text-[11px] font-bold rounded-lg hover:bg-indigo-50 transition">+ 같은 화자로 줄 추가 (오디오 분리)</button>
                              </div>
-                           ))}
-                           <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-purple-300 text-purple-600 text-xs font-bold rounded-xl hover:bg-purple-100 transition">+ 새로운 대사 추가</button>
+                              );
+                           })}
+                           <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-purple-300 text-purple-600 text-xs font-bold rounded-xl hover:bg-purple-100 transition">+ 새로운 턴(화자 차례) 추가</button>
                         </div>
  
                         {/* 표 퀴즈 에디터 영역 */}
                         <div className="border-b border-purple-200 pb-2 mb-3 mt-8">
                            <h3 className="font-bold text-sm text-purple-800">📊 우측 표 퀴즈 (Table Quiz)</h3>
                         </div>
-                        
+
+                        <ul className="text-[10px] leading-relaxed text-gray-400 -mt-1 mb-3 space-y-0.5 list-disc list-inside">
+                           <li>헤더/고정 행 텍스트는 이미지에 표가 함께 있었으면 AI가 자동으로 읽어 채워둡니다. 오디오 ID는 이미지만으로 알 수 없어 항상 직접 입력해야 합니다.</li>
+                           <li>자동 인식 결과는 오탈자가 있을 수 있으니 원본 이미지와 대조해서 확인해 주세요.</li>
+                        </ul>
+
                         <div className="space-y-4">
                            {/* 1. 헤더 속성 */}
                            <div className="space-y-2">
