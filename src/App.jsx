@@ -189,13 +189,32 @@ function splitTextForRowWidth(text, widthPx, fontFamily, fontSizePx, lineHeight,
   return result;
 }
 
+// 💡 [강조 표현 색상] 마스터 템플릿(view01.css)에 이미 정의된 3색만 사용한다 — 임의의 색상을 허용하면
+// 마스터 템플릿 CSS(.emp.col-N)가 모르는 색이라 ZIP 병합 결과에서 아예 반영되지 않는다 (2-27 참고).
+const EMP_COLORS = [
+  { cls: 'col-0', label: '빨강', hex: '#b42c13' },
+  { cls: 'col-1', label: '파랑', hex: '#018f9e' },
+  { cls: 'col-2', label: '분홍', hex: '#e0629d' },
+];
+
+// 💡 [강조 표현 UI 공용 로직] textarea에서 사용자가 마우스로 선택한 구간을
+// <span class='emp col-N'>...</span>로 감싼다. 원본 텍스트에 raw HTML을 직접 타이핑하지 않아도
+// 되게 하는 것이 목적 — roleplay(A형)·roleplay_b(B형) 양쪽에서 공용으로 쓴다.
+function wrapSelectionWithEmpColor(currentValue, start, end, colorCls) {
+  if (start == null || end == null || start === end) return null;
+  const text = currentValue || '';
+  return text.slice(0, start) + `<span class='emp ${colorCls}'>` + text.slice(start, end) + `</span>` + text.slice(end);
+}
+
 // 💡 롤플레이 (B형) 씬 기반 초기 데이터 모형 (표 퀴즈 없음)
 const INIT_ROLEPLAY_B_SCENES = [
   {
     type: "B",
     sceneId: 0,
     rolePlayImage: "RolePlay_img_0.png",
+    rolePlayImageSrc: "",
     panelBtnImage: "RolePlay_img_mini_0001.png",
+    panelBtnImageSrc: "",
     panelBtnLabel: "클릭 시 첫 번째 상황의 대화를 볼 수 있습니다.",
     roleA: "A",
     roleB: "B",
@@ -207,7 +226,9 @@ const INIT_ROLEPLAY_B_SCENES = [
     type: "B",
     sceneId: 1,
     rolePlayImage: "RolePlay_img_1.png",
+    rolePlayImageSrc: "",
     panelBtnImage: "RolePlay_img_mini_0002.png",
+    panelBtnImageSrc: "",
     panelBtnLabel: "클릭 시 두 번째 상황의 대화를 볼 수 있습니다.",
     roleA: "A",
     roleB: "B",
@@ -219,7 +240,9 @@ const INIT_ROLEPLAY_B_SCENES = [
     type: "B",
     sceneId: 2,
     rolePlayImage: "RolePlay_img_2.png",
+    rolePlayImageSrc: "",
     panelBtnImage: "RolePlay_img_mini_0003.png",
+    panelBtnImageSrc: "",
     panelBtnLabel: "클릭 시 세 번째 상황의 대화를 볼 수 있습니다.",
     roleA: "A",
     roleB: "B",
@@ -231,7 +254,9 @@ const INIT_ROLEPLAY_B_SCENES = [
     type: "B",
     sceneId: 3,
     rolePlayImage: "RolePlay_img_3.png",
+    rolePlayImageSrc: "",
     panelBtnImage: "RolePlay_img_mini_0004.png",
+    panelBtnImageSrc: "",
     panelBtnLabel: "클릭 시 네 번째 상황의 대화를 볼 수 있습니다.",
     roleA: "A",
     roleB: "B",
@@ -253,6 +278,15 @@ export default function App() {
   const [croppedViews, setCroppedViews] = useState([]);
   const [extractedDialogues, setExtractedDialogues] = useState([]);
   const [extractedTableQuiz, setExtractedTableQuiz] = useState(null);
+  // 💡 [롤플레이 B 전용] 다중 씬 인식 결과 — 각 항목이 { src: "", dialogues: 그 씬의 대사 배열 }.
+  // 씬 이미지(src)는 교과서 원본에서 자동으로 잘라내지 않고 항상 빈 값으로 둔다 — 콘텐츠 이미지가
+  // 교과서 지면에 없는 경우도 많아 사용자가 직접 업로드하는 방식으로 결정됨(handleSceneImageUpload).
+  // AI가 장면을 여러 개로 나눠 인식하지 못했을 때(단일 뷰)는 빈 배열로 두고 extractedDialogues로 폴백한다.
+  const [extractedScenesB, setExtractedScenesB] = useState([]);
+  // 💡 [롤플레이 B 전용] AI가 추출한 '교체 표현 영역'(tips) — 페이지(지면)당 1묶음이라
+  // 씬별로 나누지 않고 별도 상태로 두고, 편집 패널이 직접 읽어 읽기 전용으로 보여준다.
+  // view 자동 전개(단일 슬롯형)는 추출 프롬프트가 이미 끝내두므로 여기서 추가로 조합하지 않는다.
+  const [extractedTips, setExtractedTips] = useState([]);
  
   const dragItem = useRef(null);
   const dragOverItem = useRef(null);
@@ -283,6 +317,27 @@ export default function App() {
   // 렌더링된 위치(offsetLeft/Top)를 실측해서 그 줄 바로 아래에 절대위치로 배치하기 위한 참조/상태.
   const rolePlayScriptRef = useRef(null);
   const [roleplayKorFragments, setRoleplayKorFragments] = useState([]);
+
+  // 💡 [롤플레이 B 전용 구역] 마스터 템플릿(view01.js/css) 확인 결과, B형은 A형과 달리 실측
+  // 기반 절대배치가 아니라 .sentence-group(flex-column) 구조로 영어 문장 바로 아래에 한글이
+  // 자연스럽게 흐른다 — 별도의 측정 로직이 필요 없다(아래 JSX에서 직접 flex-column으로 렌더).
+
+  // 💡 [강조 표현 색상 버튼] "텍스트 선택 → 색상 버튼 클릭"으로 <span class='emp col-N'>를 감싸기
+  // 위해, 각 대사 textarea DOM 요소를 dialIdx(B형) / `${dialIdx}-${lineIdx}`(A형) 키로 보관한다.
+  // React state가 아니라 ref로 두는 이유: 이 값은 렌더링에 영향을 주지 않고(버튼 클릭 시점에만
+  // selectionStart/End를 읽음) 리렌더마다 새로 만들 필요가 없기 때문.
+  const dialogueBSentenceRefs = useRef({});
+  const dialogueLineSentenceRefs = useRef({});
+
+  const applyEmpColorToSelection = (textareaEl, currentValue, colorCls, onChange) => {
+    if (!textareaEl) return;
+    const wrapped = wrapSelectionWithEmpColor(currentValue, textareaEl.selectionStart, textareaEl.selectionEnd, colorCls);
+    if (wrapped == null) {
+      showToast('강조할 부분을 먼저 마우스로 선택해주세요.');
+      return;
+    }
+    onChange(wrapped);
+  };
 
   const loadJSZip = () => {
     return new Promise((resolve, reject) => {
@@ -420,7 +475,8 @@ export default function App() {
          }));
       }
  
-      if (parsedType === 'roleplay' || parsedType === 'roleplay_b') {
+      if (parsedType === 'roleplay') {
+          // 💡 [A형 — 기존 로직 그대로 유지] 컷 구분 없는 단일 뷰 대화 추출.
           let dials = [];
           if (aiData.views && aiData.views[0] && aiData.views[0].eng) {
               dials = (aiData.views[0].eng || []).map((item, idx) => ({
@@ -432,21 +488,59 @@ export default function App() {
                   muteTargets: "0"
               }));
           }
-          if (dials.length === 0) {
-              dials = parsedType === 'roleplay_b' ? INIT_ROLEPLAY_B_SCENES[0].dialogues : INIT_ROLEPLAY_DATA.dialogues;
-          }
+          if (dials.length === 0) dials = INIT_ROLEPLAY_DATA.dialogues;
           setExtractedDialogues(dials);
+          setExtractedScenesB([]);
+          setExtractedTips([]); // A형은 교체 표현 영역(tips) 개념이 없음
 
-          // 💡 롤플레이 A형이고, 이미지에 표 퀴즈가 함께 있으면 헤더/고정 행 텍스트도 같이 읽어온다.
-          // 오디오 ID는 이미지만으로 알 수 없어 항상 빈 값으로 두고(사용자가 직접 입력), rowCount(학생이
-          // 채울 빈칸 행 개수)도 이미지에서 신뢰성 있게 추론하기 어려워 건드리지 않는다(기본값 3 유지).
-          if (parsedType === 'roleplay' && aiData.tableQuiz && Array.isArray(aiData.tableQuiz.headers) && aiData.tableQuiz.headers.length > 0) {
+          // 💡 이미지에 표 퀴즈가 함께 있으면 헤더/고정 행 텍스트도 같이 읽어온다. 오디오 ID는
+          // 이미지만으로 알 수 없어 항상 빈 값으로 두고(사용자가 직접 입력), rowCount(학생이 채울
+          // 빈칸 행 개수)도 이미지에서 신뢰성 있게 추론하기 어려워 건드리지 않는다(기본값 3 유지).
+          if (aiData.tableQuiz && Array.isArray(aiData.tableQuiz.headers) && aiData.tableQuiz.headers.length > 0) {
               const extractedHeaders = aiData.tableQuiz.headers.map(h => ({ text: String(h || ''), audioId: '' }));
               const extractedStaticRow = extractedHeaders.map((_, i) => ({ text: String((aiData.tableQuiz.staticRow || [])[i] || ''), audioId: '' }));
               setExtractedTableQuiz({ headers: extractedHeaders, staticRow: extractedStaticRow });
           } else {
               setExtractedTableQuiz(null);
           }
+      } else if (parsedType === 'roleplay_b') {
+          // 💡 [B형 전용 구역] AI가 씬을 2개 이상으로 나눠 인식했으면 씬별 대사로 분리 매핑한다.
+          // 씬 이미지는 교과서 지면에 실제 콘텐츠 이미지가 없는 경우도 많아(사용자 확인),
+          // 더 이상 교과서 원본에서 자동으로 잘라내 채우지 않는다 — 항상 빈 틀로 두고
+          // 사용자가 직접 업로드하게 한다(handleSceneImageUpload).
+          // 💡 단일 슬롯형은 추출 프롬프트가 이미 tips 개수만큼 views를 전개해서 반환하므로,
+          // 여기서는 그 views를 그대로 씬으로 매핑하기만 하면 된다(추가 전개 로직 불필요).
+          // tips(교체 표현 후보)는 씬별이 아니라 페이지 전역이라 별도 상태(extractedTips)로 둔다.
+          const viewsArray = Array.isArray(aiData?.views) ? aiData.views : [];
+          setExtractedTips(Array.isArray(aiData?.tips) ? aiData.tips.map(String) : []);
+
+          if (viewsArray.length > 1) {
+              const scenes = viewsArray.map((v) => {
+                  const dials = (v.eng || []).map((item, idx) => ({
+                      speaker: item.speaker || (idx % 2 === 0 ? "A" : "B"),
+                      sentence: item.sentence || item.en || "",
+                      kor: item.kor || item.ko || "",
+                      audio_id: ""
+                  }));
+                  return { src: "", dialogues: dials };
+              });
+              setExtractedScenesB(scenes);
+              setExtractedDialogues([]);
+          } else {
+              let dials = [];
+              if (viewsArray[0] && viewsArray[0].eng) {
+                  dials = (viewsArray[0].eng || []).map((item, idx) => ({
+                      speaker: item.speaker || (idx % 2 === 0 ? "A" : "B"),
+                      sentence: item.sentence || item.en || "",
+                      kor: item.kor || item.ko || "",
+                      audio_id: ""
+                  }));
+              }
+              if (dials.length === 0) dials = INIT_ROLEPLAY_B_SCENES[0].dialogues;
+              setExtractedDialogues(dials);
+              setExtractedScenesB([]);
+          }
+          setExtractedTableQuiz(null);
       } else {
           const processedViews = [];
           const viewsArray = Array.isArray(aiData?.views) ? aiData.views : (Array.isArray(aiData) ? aiData : []);
@@ -459,6 +553,7 @@ export default function App() {
               processedViews.push({ uniqueId: `img_${Date.now()}_fallback`, src: base64Str, originalInfo: "전체 화면 (자동 할당)", inferredType: 'inline', extractedEng: [] });
           }
           setCroppedViews(processedViews);
+          setExtractedTips([]); // understand는 tips 개념이 없음
       }
       showToast("✨ AI 분석 완료!");
     } catch (error) {
@@ -479,29 +574,25 @@ export default function App() {
         fallbackViews.push({ uniqueId: `mock_${Date.now()}_${i}`, src: croppedDataUrl, originalInfo: `가상 컷 ${i+1}`, inferredType: mockTypes[i], extractedEng: [{ sentence: "This is a sample sentence.", kor: "가상 샘플 문장입니다.", audio_id: `L2_039_Bridge_${i+1}` }] });
       }
       setCroppedViews(fallbackViews);
+      setExtractedTips([]);
     } finally {
       setIsAnalyzing(false);
     }
   };
  
+  // 💡 [롤플레이 B 전용 구역] 대사 필드는 speaker/sentence/kor/audio_id로 통일한다.
+  // (한때 편집 함수만 role/text[]/translation[]/audio[] 배열 구조를 썼던 불일치가 있었으나,
+  // 초기 데이터·AI 매핑과 동일한 flat 구조로 맞춰 화면 표시/추출 시 값이 사라지는 문제를 없앴다.)
   const handleDialogueBChange = (dialIdx, field, value) => {
     if (contentType !== 'roleplay_b') return;
     setPageData(prev => prev.map((scene, sIdx) => {
       if (sIdx !== activeViewIdx) return scene;
       const updatedDialogues = [...(scene.dialogues || [])];
-      const updatedItem = { ...updatedDialogues[dialIdx] };
-      
-      if (field === 'text' || field === 'translation' || field === 'audio') {
-        updatedItem[field] = [value]; // B형 dialogues 뷰어 구조인 단일 원소 배열 매핑 대응
-      } else {
-        updatedItem[field] = value;
-      }
-      
-      updatedDialogues[dialIdx] = updatedItem;
+      updatedDialogues[dialIdx] = { ...updatedDialogues[dialIdx], [field]: value };
       return { ...scene, dialogues: updatedDialogues };
     }));
   };
- 
+
   const handleSceneBPropChange = (field, value) => {
     if (contentType !== 'roleplay_b') return;
     setPageData(prev => prev.map((scene, sIdx) => {
@@ -509,25 +600,67 @@ export default function App() {
       return { ...scene, [field]: value };
     }));
   };
- 
+
   const addDialogueB = () => {
     if (contentType !== 'roleplay_b') return;
     setPageData(prev => prev.map((scene, sIdx) => {
       if (sIdx !== activeViewIdx) return scene;
-      const targetRole = (scene.dialogues || []).length % 2 === 0 ? "A" : "B";
+      const targetSpeaker = (scene.dialogues || []).length % 2 === 0 ? "A" : "B";
       return {
         ...scene,
-        dialogues: [...(scene.dialogues || []), { role: targetRole, text: [""], translation: [""], audio: [""] }]
+        dialogues: [...(scene.dialogues || []), { speaker: targetSpeaker, sentence: "", kor: "", audio_id: "" }]
       };
     }));
   };
- 
+
   const handleDialogueBDelete = (dialIdx) => {
     if (contentType !== 'roleplay_b') return;
     setPageData(prev => prev.map((scene, sIdx) => {
       if (sIdx !== activeViewIdx) return scene;
       return { ...scene, dialogues: (scene.dialogues || []).filter((_, dIdx) => dIdx !== dialIdx) };
     }));
+  };
+
+  // 💡 씬 추가/삭제. 새 씬은 현재 씬 개수를 기준으로 sceneId/기본 리소스명을 채번한다.
+  const addSceneB = () => {
+    if (contentType !== 'roleplay_b') return;
+    setPageData(prev => {
+      const nextIdx = (prev || []).length;
+      // 💡 B형은 "교체 후보(tips)만 씬별로 갈아끼우고 나머지 대사는 모든 씬이 동일"한 구조라,
+      // 새 씬을 빈 대사로 시작하지 않고 씬 1의 대사를 그대로 복제해 넣는다 — 사용자는 그중
+      // 교체 표현만 선택해서 바꿔 넣으면 된다(대사 전체를 새로 타이핑할 필요 없음).
+      const baseDialogues = (prev && prev[0] && prev[0].dialogues && prev[0].dialogues.length > 0)
+        ? prev[0].dialogues.map(d => ({ ...d }))
+        : [{ speaker: "A", sentence: "", kor: "", audio_id: "" }];
+      const newScene = {
+        type: "B",
+        sceneId: nextIdx,
+        rolePlayImage: `RolePlay_img_${nextIdx}.png`,
+        rolePlayImageSrc: "",
+        panelBtnImage: `RolePlay_img_mini_000${nextIdx + 1}.png`,
+        panelBtnLabel: `클릭 시 ${nextIdx + 1}번째 상황의 대화를 볼 수 있습니다.`,
+        roleA: "A",
+        roleB: "B",
+        dialogues: baseDialogues,
+        id: `scene_b_${Date.now()}_${nextIdx}`
+      };
+      const next = [...(prev || []), newScene];
+      setActiveViewIdx(next.length - 1);
+      return next;
+    });
+  };
+
+  const deleteSceneB = (idx) => {
+    if (contentType !== 'roleplay_b') return;
+    setPageData(prev => {
+      if ((prev || []).length <= 1) {
+        showToast("⚠️ 최소 1개의 씬은 남아있어야 합니다.");
+        return prev;
+      }
+      const next = (prev || []).filter((_, sIdx) => sIdx !== idx);
+      setActiveViewIdx(current => Math.min(current, next.length - 1));
+      return next;
+    });
   };
  
   // 💡 [Vercel 배포 대비] 서버리스 함수의 요청 본문 크기 제한(4.5MB)에 걸리지 않도록,
@@ -612,16 +745,42 @@ export default function App() {
     }
  
     if (contentType === 'roleplay_b') {
-      const initialScenes = INIT_ROLEPLAY_B_SCENES.map((scene, idx) => ({
-        ...scene,
-        id: `scene_b_${Date.now()}_${idx}`,
-        dialogues: idx === 0 && extractedDialogues.length > 0 ? extractedDialogues.map(item => ({
-          role: item.speaker || item.role || "A",
-          text: [item.sentence || ""],
-          translation: [item.kor || ""],
-          audio: [item.audio_id || ""]
-        })) : scene.dialogues
-      }));
+      // 💡 다중 씬 추출(extractedScenesB)이 있으면 그걸로 씬 배열 전체(이미지 포함)를 구성한다 —
+      // 이 경우는 AI가 이미 씬마다 다른 대사(단일 슬롯형 자동 전개)를 뽑아준 것이므로 그대로 쓴다.
+      //
+      // 없으면(다중 선택지형이라 view가 1개만 오거나, AI 분석을 안 거친 경우) 기본 더미 씬으로
+      // 폴백하는데, 이때 씬들이 서로 다른 대사를 갖고 있으면 안 된다 — B형은 "교체 후보(tips)만
+      // 씬별로 갈아끼우고 나머지 대사는 모든 씬이 동일"한 구조이므로, 씬 1의 대사(추출됐으면
+      // extractedDialogues, 아니면 기본 예시)를 모든 씬에 똑같이 복제해 넣는다. 그래야 사용자가
+      // 교체 후보(Tips) 블록을 참고해 씬마다 해당 단어/구만 선택 → 색상 버튼으로 바꿔치기하면
+      // 되고, 대사 전체를 씬마다 새로 타이핑할 필요가 없다.
+      const baseDialoguesForFallback = extractedDialogues.length > 0
+        ? extractedDialogues.map(item => ({
+            speaker: item.speaker || "A",
+            sentence: item.sentence || "",
+            kor: item.kor || "",
+            audio_id: item.audio_id || ""
+          }))
+        : INIT_ROLEPLAY_B_SCENES[0].dialogues;
+      const initialScenes = extractedScenesB.length > 0
+        ? extractedScenesB.map((scene, idx) => ({
+            type: "B",
+            sceneId: idx,
+            rolePlayImage: `RolePlay_img_${idx}.png`,
+            rolePlayImageSrc: scene.src || "",
+            panelBtnImage: `RolePlay_img_mini_000${idx + 1}.png`,
+            panelBtnImageSrc: "",
+            panelBtnLabel: `클릭 시 ${idx + 1}번째 상황의 대화를 볼 수 있습니다.`,
+            roleA: "A",
+            roleB: "B",
+            dialogues: scene.dialogues.length > 0 ? scene.dialogues : [{ speaker: "A", sentence: "", kor: "", audio_id: "" }],
+            id: `scene_b_${Date.now()}_${idx}`
+          }))
+        : INIT_ROLEPLAY_B_SCENES.map((scene, idx) => ({
+            ...scene,
+            id: `scene_b_${Date.now()}_${idx}`,
+            dialogues: baseDialoguesForFallback.map(d => ({ ...d }))
+          }));
       setPageData(initialScenes);
     } else if (contentType === 'roleplay') {
       // 💡 extractedDialogues는 A/B형이 공유하는 평평한 중간 포맷(1항목=1줄)이라, 롤플레이 A형이 쓰는
@@ -1039,6 +1198,27 @@ export default function App() {
       reader.readAsDataURL(file);
     }
   };
+
+  // 💡 [롤플레이 B 전용] 씬 상황극 이미지 업로드. handleBgSwap과 동일한 FileReader 패턴을 쓰되,
+  // 실제 이미지 데이터(rolePlayImageSrc)와 파일명(rolePlayImage, ZIP export 경로용)을 분리해서 저장한다.
+  // 하단 썸네일(panelBtnImageSrc)은 별도 업로드를 요구하지 않고 resizeImageForUpload로 축소 생성한다.
+  const handleSceneImageUpload = (e) => {
+    if (contentType !== 'roleplay_b') return;
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const fullSrc = event.target.result;
+      let thumbSrc = fullSrc;
+      try {
+        thumbSrc = await resizeImageForUpload(fullSrc, 200, 0.85);
+      } catch (err) {
+        console.warn('썸네일 생성 실패, 원본 이미지를 그대로 사용합니다:', err);
+      }
+      setPageData(prev => (prev || []).map((scene, idx) => idx === activeViewIdx ? { ...scene, rolePlayImageSrc: fullSrc, panelBtnImageSrc: thumbSrc } : scene));
+    };
+    reader.readAsDataURL(file);
+  };
  
   const handleTableQuizChange = (field, colIndex, prop, value) => {
       setPageData(prev => (prev || []).map((data, idx) => {
@@ -1211,10 +1391,10 @@ export default function App() {
                 roleA: String(scene.roleA || "A"),
                 roleB: String(scene.roleB || "B"),
                 dialogues: (scene.dialogues || []).map(item => ({
-                    role: String(item.speaker || item.role || "A"),
-                    text: [String(item.sentence || item.text?.[0] || "")],
-                    translation: [String(item.kor || item.translation?.[0] || "")],
-                    audio: [String(item.audio_id || item.audio?.[0] || "")]
+                    role: String(item.speaker || "A"),
+                    text: [String(item.sentence || "")],
+                    translation: [String(item.kor || "")],
+                    audio: [String(item.audio_id || "")]
                 }))
             }));
  
@@ -1237,7 +1417,20 @@ export default function App() {
                           `    ]\n` +
                           `};\n\n` +
                           `const rolePlayData = ${JSON.stringify(formattedBData, null, 2)};\n`;
- 
+
+            // 💡 [씬 이미지 임베드] 마스터 템플릿(view01.js renderRolePlay)이 실제로
+            // `./images/view01/{rolePlayImage}`, `./images/view01/{panelBtnImage}` 경로에서
+            // 이미지를 로드하는 것을 확인함 — 씬마다 업로드된 실제 이미지 데이터
+            // (rolePlayImageSrc/panelBtnImageSrc)를 그 경로로 zip에 심는다.
+            (pageData || []).forEach((scene) => {
+              if (scene.rolePlayImageSrc && scene.rolePlayImageSrc.startsWith('data:image')) {
+                newZip.file(`images/view01/${scene.rolePlayImage}`, scene.rolePlayImageSrc.split(',')[1], { base64: true });
+              }
+              if (scene.panelBtnImageSrc && scene.panelBtnImageSrc.startsWith('data:image')) {
+                newZip.file(`images/view01/${scene.panelBtnImage}`, scene.panelBtnImageSrc.split(',')[1], { base64: true });
+              }
+            });
+
         } else {
             const exportGlobalData = globalData;
             // 💡 [수정 5] 문장(eng)이 전부 비어있으면 말풍선 데이터 자체를 null로 내보내
@@ -1271,7 +1464,16 @@ export default function App() {
             });
         }
  
-        const viewPageInfoData = (pageData || []).map(data => ({ url: `view${data.view}.html` }));
+        // 💡 [버그 수정] view_pageinfo.js는 실제 사이트의 "페이지(HTML 파일)" 목록이다. understand는
+        // 컷(cut)마다 실제로 별도 view0X.html 파일이 되므로 pageData 항목 수만큼 맞지만, roleplay/
+        // roleplay_b는 대화·씬이 몇 개든 항상 view01.html 한 페이지짜리 단일 활동이다 — 씬 전환은
+        // 마스터 템플릿 자체의 패널 버튼(panel-btns)이 페이지 이동 없이 처리한다. 그런데 이전엔
+        // contentType 구분 없이 pageData(씬/대화 배열)를 그대로 매핑해서, roleplay_b에서 씬이 여러 개면
+        // view_pageinfo가 씬 개수만큼 부풀려졌고, 그 결과 마스터 템플릿이 "여러 페이지가 있다"고 오인해
+        // 불필요한 페이지 이동 네비게이션 바(.nav-html)를 그려버렸다.
+        const viewPageInfoData = (contentType === 'roleplay' || contentType === 'roleplay_b')
+          ? [{ url: "view01.html" }]
+          : (pageData || []).map(data => ({ url: `view${data.view}.html` }));
         const viewPageInfoContent = `const view_pageinfo = ${JSON.stringify(viewPageInfoData, null, 2)};\n`;
  
         let targetDataJsPath = "js/data.js";
@@ -1453,9 +1655,14 @@ export default function App() {
                   {contentType === 'roleplay' && (
                     <button className="px-5 py-1.5 text-sm font-bold rounded-full bg-purple-600 text-white shadow-md">Roleplay A View</button>
                   )}
-                  {contentType === 'roleplay_b' && (pageData || []).map((scene, idx) => (
-                    <button key={scene.id} onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-teal-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>Scene 0{idx + 1}</button>
-                  ))}
+                  {contentType === 'roleplay_b' && (
+                    <>
+                      {(pageData || []).map((scene, idx) => (
+                        <button key={scene.id} onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-teal-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>Scene 0{idx + 1}</button>
+                      ))}
+                      <button onClick={addSceneB} className="px-4 py-1.5 text-sm font-bold rounded-full whitespace-nowrap border-2 border-dashed border-teal-400 text-teal-600 hover:bg-teal-50 transition">+ 씬 추가</button>
+                    </>
+                  )}
                </div>
             </div>
  
@@ -1621,57 +1828,98 @@ export default function App() {
                         {/* 💡 [분기] Roleplay B형 레이아웃: 표 퀴즈가 없고, 대본이 가로 740px 크기로 시원하게 꽉 채워지는 구조 */}
                         {contentType === 'roleplay_b' ? (
                           <>
-                             {/* 좌측 장면 이미지 플레이스홀더 영역 */}
-                             <div style={{ position: 'absolute', left: 40, top: 256, width: 420, height: 290, border: '1px solid #ddd', borderRadius: '20px', backgroundColor: '#fafafa', display: 'flex', flexFlow: 'column', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', color: '#888', fontStyle: 'italic', fontSize: '14px' }}>
-                                <span style={{ fontSize: '32px', marginBottom: '8px' }}>🖼️</span>
-                                {activeData.rolePlayImage || "RolePlay_img_X.png"}
+                             {/* 좌측 장면 이미지 — 업로드된 이미지가 있으면 실제 미리보기, 없으면 플레이스홀더 */}
+                             <div style={{ position: 'absolute', left: 40, top: 256, width: 420, height: 290, border: '1px solid #ddd', borderRadius: '20px', backgroundColor: '#fafafa', overflow: 'hidden' }}>
+                                {activeData.rolePlayImageSrc ? (
+                                   <img src={activeData.rolePlayImageSrc} alt={activeData.rolePlayImage || '장면 이미지'} className="w-full h-full object-cover" />
+                                ) : (
+                                   <div style={{ width: '100%', height: '100%', display: 'flex', flexFlow: 'column', alignItems: 'center', justifyContent: 'center', color: '#888', fontStyle: 'italic', fontSize: '14px' }}>
+                                      <span style={{ fontSize: '32px', marginBottom: '8px' }}>🖼️</span>
+                                      {activeData.rolePlayImage || "RolePlay_img_X.png"}
+                                   </div>
+                                )}
                              </div>
- 
-                             {/* B형 전용 740px 대형 대본 영역 */}
-                             <div style={{ position: 'absolute', left: 485, top: 251, width: 740, height: 360, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0', padding: '32px 30px', overflowY: 'auto' }}>
+
+                             {/* B형 전용 740px 대형 대본 영역 — 마스터 템플릿(view01.css) 확인 결과, 실측 절대배치가
+                                 아니라 .sentence-group(flex-column) 구조로 영어 문장 바로 아래에 한글이 자연스럽게
+                                 흐른다. emp 강조색은 view01.css 정의값(col-0=#b42c13, col-1=#018f9e, col-2=#e0629d)과
+                                 동일하게 맞춘다. */}
+                             <style>{`.rpb-script .emp.col-0{color:#b42c13}.rpb-script .emp.col-1{color:#018f9e}.rpb-script .emp.col-2{color:#e0629d}`}</style>
+                             <div className="rpb-script" style={{ position: 'absolute', left: 485, top: 251, width: 740, height: 360, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0', padding: '32px 30px', overflowY: 'auto' }}>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                                   {(activeData.dialogues || []).map((item, idx) => {
-                                       const rawSentence = Array.isArray(item.text) ? item.text[0] || "" : (item.sentence || "");
-                                       const rawTranslation = Array.isArray(item.translation) ? item.translation[0] || "" : (item.kor || "");
-                                       return (
-                                          <div key={idx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-                                             <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.4' }}>{String(item.role || item.speaker || '')}:</div>
-                                             <div style={{ flex: 1, position: 'relative' }}>
-                                                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.4' }} dangerouslySetInnerHTML={{ __html: String(rawSentence) }} />
-                                                <div style={{ fontSize: '15px', color: '#06c', marginTop: '3px', fontWeight: 'bold', lineHeight: '1.4' }}>{String(rawTranslation)}</div>
-                                             </div>
-                                          </div>
-                                       );
-                                    })}
+                                   {(activeData.dialogues || []).map((item, dialIdx) => (
+                                      <div key={dialIdx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                                         <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.2' }}>{String(item.speaker || '')}:</div>
+                                         <div style={{ flex: 1 }}>
+                                            <span className="sentence-group" style={{ display: 'inline-flex', flexDirection: 'column', verticalAlign: 'top' }}>
+                                               <span
+                                                  className="text-eng"
+                                                  style={{ display: 'inline-block', width: 'fit-content', fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.2', wordBreak: 'keep-all' }}
+                                                  dangerouslySetInnerHTML={{ __html: String(item.sentence || "영어 대사") }}
+                                               />
+                                               <div className="text-kor" style={{ display: 'block', fontSize: '16px', color: '#06c', fontWeight: 'bold', marginTop: 1, lineHeight: '1.0', wordBreak: 'keep-all' }}>{item.kor}</div>
+                                            </span>
+                                         </div>
+                                      </div>
+                                   ))}
                                 </div>
                              </div>
- 
-                             {/* B형 Scene 전환 패널 버튼 세트 시각화 */}
-                             <div style={{ position: 'absolute', top: 549, left: 54.5, display: 'flex', gap: '6px', pointerEvents: 'auto' }}>
-                               {pageData.map((scene, idx) => (
-                                 <button
-                                   key={scene.id || idx}
-                                   onClick={() => setActiveViewIdx(idx)}
-                                   style={{
-                                     width: '100px',
-                                     height: '75px',
-                                     borderRadius: '10px',
-                                     backgroundColor: idx === activeViewIdx ? '#e5f2ff' : '#fafafa',
-                                     border: idx === activeViewIdx ? '4px solid #ffcc00' : '1px solid #ddd',
-                                     display: 'flex',
-                                     alignItems: 'center',
-                                     justifyContent: 'center',
-                                     position: 'relative',
-                                     cursor: 'pointer'
-                                   }}
-                                 >
-                                    <span style={{ position: 'absolute', top: 2, left: 4, fontSize: '9px', fontWeight: 'bold', color: '#444' }}>Scene {idx+1}</span>
-                                    <div style={{ width: '84px', height: '57px', border: '1px dashed #ccc', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', fontSize: '9px', color: '#999' }}>
-                                       {scene.panelBtnImage || "mini.png"}
-                                    </div>
-                                 </button>
-                               ))}
-                             </div>
+
+                             {/* B형 Scene 전환 패널 버튼 세트 시각화 + 씬 추가/삭제 — 마스터 템플릿
+                                 (view01.js renderRolePlay)이 반영한 폭 초과 수정과 동일한 계산식을 그대로
+                                 포팅한다: 버튼 행 전체 폭은 항상 메인 이미지 폭(420px)에 맞추고, 씬 개수(N)가
+                                 늘어나면 버튼 1개당 폭과 내부 썸네일 크기가 비례해서 줄어든다(2-30 참고). */}
+                             {(() => {
+                               const PANEL_ROW_WIDTH = 420;
+                               const PANEL_ROW_GAP = 6;
+                               const THUMB_NATIVE_W = 84;
+                               const THUMB_NATIVE_H = 57;
+                               const sceneCount = pageData.length;
+                               const btnWidth = sceneCount > 0 ? (PANEL_ROW_WIDTH - (sceneCount - 1) * PANEL_ROW_GAP) / sceneCount : PANEL_ROW_WIDTH;
+                               const thumbScale = Math.min(1, btnWidth / THUMB_NATIVE_W);
+                               return (
+                                 <div className="rpb-panel-btns" style={{ position: 'absolute', top: 549, left: 54.5, display: 'flex', gap: `${PANEL_ROW_GAP}px`, alignItems: 'center', pointerEvents: 'auto' }}>
+                                   {pageData.map((scene, idx) => (
+                                     <button
+                                       key={scene.id || idx}
+                                       onClick={() => setActiveViewIdx(idx)}
+                                       className="group"
+                                       style={{
+                                         width: `${btnWidth}px`,
+                                         flexShrink: 0,
+                                         height: '75px',
+                                         borderRadius: '10px',
+                                         backgroundColor: idx === activeViewIdx ? '#e5f2ff' : '#fafafa',
+                                         border: idx === activeViewIdx ? '4px solid #ffcc00' : '1px solid #ddd',
+                                         display: 'flex',
+                                         alignItems: 'center',
+                                         justifyContent: 'center',
+                                         position: 'relative',
+                                         cursor: 'pointer'
+                                       }}
+                                     >
+                                        <span style={{ position: 'absolute', top: 2, left: 4, fontSize: '9px', fontWeight: 'bold', color: '#444' }}>Scene {idx+1}</span>
+                                        {pageData.length > 1 && (
+                                          <span
+                                            onClick={(e) => { e.stopPropagation(); deleteSceneB(idx); }}
+                                            className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                            style={{ position: 'absolute', top: 2, right: 2, width: 16, height: 16, borderRadius: '50%', backgroundColor: '#fee2e2', color: '#ef4444', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                          >✕</span>
+                                        )}
+                                        <div style={{ width: `${THUMB_NATIVE_W * thumbScale}px`, height: `${THUMB_NATIVE_H * thumbScale}px`, border: '1px dashed #ccc', borderRadius: '4px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', fontSize: '9px', color: '#999' }}>
+                                           {scene.panelBtnImageSrc ? (
+                                             <img src={scene.panelBtnImageSrc} alt={scene.panelBtnImage || '썸네일'} className="w-full h-full object-cover" />
+                                           ) : (scene.panelBtnImage || "mini.png")}
+                                        </div>
+                                     </button>
+                                   ))}
+                                   <button
+                                     onClick={addSceneB}
+                                     style={{ width: '60px', flexShrink: 0, height: '75px', borderRadius: '10px', border: '2px dashed #14b8a6', backgroundColor: '#f0fdfa', color: '#0d9488', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer' }}
+                                   >+ 씬</button>
+                                 </div>
+                               );
+                             })()}
                           </>
                         ) : (
                           /* 기존 롤플레이 A형 레이아웃 */
@@ -1680,7 +1928,11 @@ export default function App() {
                                   JS가 새로 만드는 scrollBox(paddingTop/Bottom:15px)가 중첩됨 → 합쳐서 top/bottom 15px, left 30px, right 10px.
                                   내부 콘텐츠는 minHeight:100%+justifyContent:center로 짧을 때 수직 중앙 정렬됨. 턴 사이 간격은
                                   .talk{margin-bottom:18px} 하나뿐(별도 gap 없음 — gap을 같이 쓰면 간격이 두 배로 겹친다). */}
-                             <div ref={rolePlayScriptRef} style={{ position: 'absolute', left: 40, top: 256, width: 660, height: 340, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0', padding: '15px 10px 15px 30px', overflowY: 'auto' }}>
+                             {/* 💡 [강조 표현 색상] B형(2-27~2-28)과 동일한 3색 — 사용자가 텍스트 선택 후
+                                 색상 버튼으로 <span class='emp col-N'>를 직접 만들어 넣으므로, 여기서도
+                                 그 결과가 그대로 색으로 보이도록 스코프를 맞춰 정의한다. */}
+                             <style>{`.rp-script .emp.col-0{color:#b42c13}.rp-script .emp.col-1{color:#018f9e}.rp-script .emp.col-2{color:#e0629d}`}</style>
+                             <div ref={rolePlayScriptRef} className="rp-script" style={{ position: 'absolute', left: 40, top: 256, width: 660, height: 340, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0', padding: '15px 10px 15px 30px', overflowY: 'auto' }}>
                                 <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%', justifyContent: 'center' }}>
                                    {(activeData.dialogues || []).map((turn, dialIdx) => {
                                       const lines = (turn.lines && turn.lines.length > 0)
@@ -1692,17 +1944,11 @@ export default function App() {
                                             <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.8' }}>{String(turn.speaker || '')}:</div>
                                             <div className="rp-turn-content" style={{ flex: 1, position: 'relative', paddingRight: '47px', minHeight: 40 }}>
                                                <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
-                                                  {lines.map((line, lineIdx) => {
-                                                     let displayEng = line.sentence || "영어 대사";
-                                                     if (line.hasBlank && displayEng.includes('[')) {
-                                                        displayEng = displayEng.replace(/\[(.*?)\]/g, "<span class='emp col-0' style='color:#b42c13;'>$1</span>");
-                                                     }
-                                                     return (
-                                                        <React.Fragment key={lineIdx}>
-                                                           <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: displayEng }} />{' '}
-                                                        </React.Fragment>
-                                                     );
-                                                  })}
+                                                  {lines.map((line, lineIdx) => (
+                                                     <React.Fragment key={lineIdx}>
+                                                        <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: line.sentence || "영어 대사" }} />{' '}
+                                                     </React.Fragment>
+                                                  ))}
                                                </div>
                                                {roleplayKorFragments.filter(f => f.turnIdx === dialIdx).map(f => (
                                                   <div key={f.key} style={{ position: 'absolute', left: f.left, top: f.top, maxWidth: f.maxWidth, fontSize: '15px', color: '#06c', fontWeight: 'bold', lineHeight: '1.8' }}>{f.text}</div>
@@ -1910,11 +2156,16 @@ export default function App() {
                         </div>
                         <div className="space-y-3 bg-emerald-50/40 p-3 rounded-xl border border-emerald-100">
                            <div>
-                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">상황극 메인 이미지 파일명</label>
+                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">상황극 이미지 업로드</label>
+                              <input type="file" accept="image/*" onChange={handleSceneImageUpload} className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 cursor-pointer" />
+                              <p className="text-[10px] text-gray-400 mt-1">업로드하면 캔버스 미리보기와 하단 씬 썸네일이 자동 갱신됩니다.</p>
+                           </div>
+                           <div>
+                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">상황극 메인 이미지 파일명 (ZIP 내 경로용)</label>
                               <input type="text" value={activeData.rolePlayImage || ''} onChange={e => handleSceneBPropChange('rolePlayImage', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none font-mono focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="ex: RolePlay_img_0.png" />
                            </div>
                            <div>
-                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">하단 썸네일 이미지 파일명</label>
+                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">하단 썸네일 이미지 파일명 (ZIP 내 경로용)</label>
                               <input type="text" value={activeData.panelBtnImage || ''} onChange={e => handleSceneBPropChange('panelBtnImage', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none font-mono focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="ex: RolePlay_img_mini_0001.png" />
                            </div>
                            <div>
@@ -1922,40 +2173,75 @@ export default function App() {
                               <input type="text" value={activeData.panelBtnLabel || ''} onChange={e => handleSceneBPropChange('panelBtnLabel', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="클릭 시 해당 장면의 대화를 볼 수 있습니다." />
                            </div>
                         </div>
- 
+
+                        {/* 💡 [교체 후보(tips) 블록] AI가 추출한 '교체 표현 영역'을 읽기 전용으로 보여준다.
+                            지면 전체에 1묶음(씬별이 아님)이라 extractedTips를 그대로 참조. 클릭/자동 삽입
+                            없이 참고용 표시만 — view 자동 전개(단일 슬롯형)는 추출 단계에서 이미 끝났고,
+                            조합(다중 선택지형)은 사용자가 대화 스크립트를 직접 편집해서 반영한다. */}
+                        {extractedTips.length > 0 && (
+                          <div className="mt-6">
+                             <div className="border-b border-amber-200 pb-2 mb-3">
+                                <h3 className="font-bold text-sm text-amber-800">🔤 교체 후보 (Tips)</h3>
+                             </div>
+                             <div className="space-y-1.5 bg-amber-50/50 p-3 rounded-xl border border-amber-100">
+                                <p className="text-[10px] text-amber-700/80 mb-1">AI가 지면에서 인식한 교체 표현 후보입니다 (참고용, 대화 스크립트에 자동 반영되지 않습니다).</p>
+                                {extractedTips.map((tip, tipIdx) => (
+                                   <div key={tipIdx} className="text-xs text-gray-700 bg-white border border-amber-100 rounded-lg px-2.5 py-1.5">
+                                      {tip}
+                                   </div>
+                                ))}
+                             </div>
+                          </div>
+                        )}
+
                         <div className="border-b border-emerald-200 pb-2 mb-3 mt-6">
                            <h3 className="font-bold text-sm text-emerald-800">📝 장면 대화 스크립트 작성</h3>
                         </div>
                         <div className="space-y-4">
-                           {(activeData.dialogues || []).map((item, dialIdx) => {
-                             const sentenceVal = Array.isArray(item.text) ? item.text[0] || "" : (item.sentence || "");
-                             const translationVal = Array.isArray(item.translation) ? item.translation[0] || "" : (item.kor || "");
-                             const audioVal = Array.isArray(item.audio) ? item.audio[0] || "" : (item.audio_id || "");
-                             
-                             return (
+                           {(activeData.dialogues || []).map((item, dialIdx) => (
                                <div key={dialIdx} className="p-3 border rounded-xl relative group shadow-sm bg-gray-50 border-gray-200 space-y-2">
                                   <button onClick={() => handleDialogueBDelete(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
-                                  
+
                                   <div className="flex justify-between items-center mb-1">
                                      <div className="flex items-center gap-2">
-                                        <select value={item.role || 'A'} onChange={e => handleDialogueBChange(dialIdx, 'role', e.target.value)} className="p-1 text-xs font-bold text-emerald-950 rounded bg-emerald-100 border border-emerald-300 outline-none cursor-pointer">
+                                        <select value={item.speaker || 'A'} onChange={e => handleDialogueBChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-emerald-950 rounded bg-emerald-100 border border-emerald-300 outline-none cursor-pointer">
                                            <option value="A">A 역할</option>
                                            <option value="B">B 역할</option>
                                         </select>
                                      </div>
                                   </div>
- 
-                                  <label className="block text-emerald-700 text-[10px] font-bold">영어 대사</label>
-                                  <textarea value={sentenceVal} onChange={e => handleDialogueBChange(dialIdx, 'text', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none resize-none h-16 bg-white" placeholder="영어 대사 입력" />
-                                  
+
+                                  <div className="flex items-center justify-between">
+                                     <label className="block text-emerald-700 text-[10px] font-bold">영어 대사</label>
+                                     <div className="flex items-center gap-1">
+                                        <span className="text-[9px] text-gray-400 mr-0.5">강조: 텍스트 선택 후 클릭</span>
+                                        {EMP_COLORS.map(c => (
+                                           <button
+                                              key={c.cls}
+                                              type="button"
+                                              onClick={() => applyEmpColorToSelection(dialogueBSentenceRefs.current[dialIdx], item.sentence || '', c.cls, v => handleDialogueBChange(dialIdx, 'sentence', v))}
+                                              className="w-4 h-4 rounded-full border border-white shadow ring-1 ring-gray-200 hover:ring-gray-400"
+                                              style={{ backgroundColor: c.hex }}
+                                              title={`${c.label} 강조로 감싸기`}
+                                           />
+                                        ))}
+                                     </div>
+                                  </div>
+                                  <textarea
+                                     ref={el => { dialogueBSentenceRefs.current[dialIdx] = el; }}
+                                     value={item.sentence || ''}
+                                     onChange={e => handleDialogueBChange(dialIdx, 'sentence', e.target.value)}
+                                     className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none resize-none h-16 bg-white"
+                                     placeholder="영어 대사 입력 (강조할 부분을 마우스로 선택한 뒤 위 색상 버튼을 누르세요)"
+                                  />
+
                                   <label className="block text-emerald-700 text-[10px] font-bold">한글 해석</label>
-                                  <textarea value={translationVal} onChange={e => handleDialogueBChange(dialIdx, 'translation', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none resize-none h-12 bg-white" placeholder="한글 번역 해석" />
-                                  
+                                  <textarea value={item.kor || ''} onChange={e => handleDialogueBChange(dialIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none resize-none h-12 bg-white" placeholder="한글 번역 해석" />
+
                                   <label className="block text-emerald-700 text-[10px] font-bold">오디오 ID</label>
-                                  <input type="text" value={audioVal} onChange={e => handleDialogueBChange(dialIdx, 'audio', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L3_001_CommB_eg_01" />
+                                  <input type="text" value={item.audio_id || ''} onChange={e => handleDialogueBChange(dialIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L3_001_CommB_eg_01" />
                                </div>
-                             );
-                           })}
+                           ))}
                            <button onClick={addDialogueB} className="w-full py-2 border-2 border-dashed border-emerald-300 text-emerald-600 text-xs font-bold rounded-xl hover:bg-emerald-100 transition">+ 대사 추가</button>
                         </div>
                      </>
@@ -1995,14 +2281,33 @@ export default function App() {
                                         <span className="text-[10px] font-bold text-gray-500">{lineIdx + 1}번째 줄</span>
                                         <label className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 cursor-pointer bg-indigo-100 px-2 py-1 rounded">
                                           <input type="checkbox" checked={line.hasBlank || false} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'hasBlank', e.target.checked)} className="cursor-pointer" />
-                                          빈칸/강조 지정
+                                          빈칸(오디오 묵음) 지정
                                         </label>
                                      </div>
 
-                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">
-                                       영어 대사 <span className="text-gray-400 font-normal ml-1">({line.hasBlank ? "빈칸/강조 부분은 [대괄호]로 묶어주세요" : "일반 텍스트 입력"})</span>
-                                     </label>
-                                     <textarea value={line.sentence || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', e.target.value)} className={`w-full p-2 text-xs border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`} placeholder={line.hasBlank ? "예: I enjoy [playing basketball]." : "영어 대사 입력"} />
+                                     <div className="flex items-center justify-between mb-1">
+                                        <label className="block text-emerald-700 text-[11px] font-bold">영어 대사</label>
+                                        <div className="flex items-center gap-1">
+                                           <span className="text-[9px] text-gray-400 mr-0.5">강조: 텍스트 선택 후 클릭</span>
+                                           {EMP_COLORS.map(c => (
+                                              <button
+                                                 key={c.cls}
+                                                 type="button"
+                                                 onClick={() => applyEmpColorToSelection(dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`], line.sentence || '', c.cls, v => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', v))}
+                                                 className="w-4 h-4 rounded-full border border-white shadow ring-1 ring-gray-200 hover:ring-gray-400"
+                                                 style={{ backgroundColor: c.hex }}
+                                                 title={`${c.label} 강조로 감싸기`}
+                                              />
+                                           ))}
+                                        </div>
+                                     </div>
+                                     <textarea
+                                        ref={el => { dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`] = el; }}
+                                        value={line.sentence || ''}
+                                        onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', e.target.value)}
+                                        className={`w-full p-2 text-xs border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`}
+                                        placeholder="영어 대사 입력 (강조할 부분을 마우스로 선택한 뒤 위 색상 버튼을 누르세요)"
+                                     />
 
                                      {line.hasBlank && (
                                         <div className="mb-2 p-2 bg-indigo-100/50 border border-indigo-200 rounded-lg">
