@@ -206,6 +206,29 @@ function wrapSelectionWithEmpColor(currentValue, start, end, colorCls) {
   return text.slice(0, start) + `<span class='emp ${colorCls}'>` + text.slice(start, end) + `</span>` + text.slice(end);
 }
 
+// 💡 [롤플레이 A형 빈칸 지정 전용] 마스터 템플릿(view01.html)의 buildRolePlay()는 hasBlank인 줄의
+// eng 텍스트에서 정규식 `\[(.*?)\]`로 대괄호 구간을 찾아, 빈칸 모드에서는 투명색으로, 정답 모드에서는
+// emp col-N 강조로 자동 변환한다 — 즉 이 대괄호 문법 자체가 "빈칸 지정"의 유일한 트리거다(2-28 이전
+// 방식). emp span을 직접 끼워넣는 wrapSelectionWithEmpColor와는 별개 함수로 분리해서, 사용자가
+// 텍스트를 선택해 버튼만 누르면 raw `[ ]`를 타이핑하지 않고도 빈칸 구간을 지정할 수 있게 한다.
+function wrapSelectionWithBracket(currentValue, start, end) {
+  if (start == null || end == null || start === end) return null;
+  const text = currentValue || '';
+  if (text.slice(start, end).includes('[') || text.slice(start, end).includes(']')) return null;
+  return text.slice(0, start) + '[' + text.slice(start, end) + ']' + text.slice(end);
+}
+
+// 💡 [빈칸 강조색 미리보기 전용] 실제 export 데이터(line.sentence)에는 대괄호(`[ ]`)만 남기고,
+// 색상은 별도 필드(line.blankColor, 0~2)로 관리한다 — 마스터 템플릿이 그 색상 인덱스를 읽어
+// `emp col-N`을 적용하도록 마스터 템플릿 쪽에 별도 작업 요청을 함(작업 프롬프트 참고). 저작 도구
+// 캔버스에서는 마스터의 "정답 모드" 렌더링과 동일하게 보이도록, 대괄호 구간을 미리보기용으로만
+// emp span으로 감싸서 화면에 표시한다(대괄호 문자 자체는 화면에 안 보이고 색만 보임).
+function renderBracketAsEmpPreview(text, blankColor) {
+  if (!text) return text;
+  const colorCls = `col-${Number.isInteger(blankColor) ? blankColor : 0}`;
+  return text.replace(/\[(.*?)\]/g, (match, inner) => `<span class='emp ${colorCls}'>${inner}</span>`);
+}
+
 // 💡 롤플레이 (B형) 씬 기반 초기 데이터 모형 (표 퀴즈 없음)
 const INIT_ROLEPLAY_B_SCENES = [
   {
@@ -334,6 +357,23 @@ export default function App() {
     const wrapped = wrapSelectionWithEmpColor(currentValue, textareaEl.selectionStart, textareaEl.selectionEnd, colorCls);
     if (wrapped == null) {
       showToast('강조할 부분을 먼저 마우스로 선택해주세요.');
+      return;
+    }
+    onChange(wrapped);
+  };
+
+  // 💡 [롤플레이 A형 전용] 텍스트 선택 → 버튼 클릭으로 빈칸(대괄호) 구간을 지정한다.
+  const applyBracketToSelection = (textareaEl, currentValue, onChange) => {
+    if (!textareaEl) return;
+    const start = textareaEl.selectionStart;
+    const end = textareaEl.selectionEnd;
+    if (start == null || end == null || start === end) {
+      showToast('빈칸으로 지정할 부분을 먼저 마우스로 선택해주세요.');
+      return;
+    }
+    const wrapped = wrapSelectionWithBracket(currentValue, start, end);
+    if (wrapped == null) {
+      showToast('선택한 구간에 이미 대괄호가 포함되어 있어요. 대괄호가 겹치지 않게 선택해주세요.');
       return;
     }
     onChange(wrapped);
@@ -1361,6 +1401,11 @@ export default function App() {
                                 lineObj.muteTargets = line.muteTargets !== undefined && String(line.muteTargets).trim() !== ""
                                     ? String(line.muteTargets).split(',').map(s => Number(s.trim()))
                                     : [0];
+                                // 💡 [빈칸 강조색] eng 안의 `[대괄호]` 구간을 정답 모드에서 몇 번 색상(emp col-N)으로
+                                // 강조할지 지정. 마스터 템플릿이 기존에 col-0로 하드코딩했던 부분을 이 값을 읽어
+                                // 쓰도록 별도 수정이 필요함(작업 프롬프트 참고) — 그 전까지는 값을 내보내기만 하고
+                                // 무시될 수 있음.
+                                lineObj.blankColor = Number.isInteger(line.blankColor) ? line.blankColor : 0;
                             }
 
                             return lineObj;
@@ -1946,7 +1991,7 @@ export default function App() {
                                                <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                                                   {lines.map((line, lineIdx) => (
                                                      <React.Fragment key={lineIdx}>
-                                                        <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: line.sentence || "영어 대사" }} />{' '}
+                                                        <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: line.hasBlank ? renderBracketAsEmpPreview(line.sentence || "영어 대사", line.blankColor) : (line.sentence || "영어 대사") }} />{' '}
                                                      </React.Fragment>
                                                   ))}
                                                </div>
@@ -2310,7 +2355,34 @@ export default function App() {
                                      />
 
                                      {line.hasBlank && (
-                                        <div className="mb-2 p-2 bg-indigo-100/50 border border-indigo-200 rounded-lg">
+                                        <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
+                                           <div className="flex items-center justify-between mb-1">
+                                              <label className="text-amber-800 text-[11px] font-bold">빈칸으로 지정할 구간 [ ]</label>
+                                              <button
+                                                 type="button"
+                                                 onClick={() => applyBracketToSelection(dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`], line.sentence || '', v => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', v))}
+                                                 className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded hover:bg-amber-200"
+                                              >
+                                                 위에서 선택한 부분 [ ]로 감싸기
+                                              </button>
+                                           </div>
+                                           <p className="text-[10px] leading-relaxed text-amber-700 mb-1.5">
+                                              위 "영어 대사"에서 정답(빈칸)이 될 부분을 마우스로 선택한 뒤 이 버튼을 누르면 <span className="font-mono">[ ]</span>로 감싸집니다.
+                                              마스터 템플릿이 이 대괄호 구간을 처음엔 안 보이게, 정답 확인 시엔 아래 색으로 강조해서 보여줍니다.
+                                           </p>
+                                           <div className="flex items-center gap-1 mb-2">
+                                              <span className="text-[10px] text-amber-700 mr-1">정답 강조색:</span>
+                                              {EMP_COLORS.map((c, colorIdx) => (
+                                                 <button
+                                                    key={c.cls}
+                                                    type="button"
+                                                    onClick={() => handleDialogueLineChange(dialIdx, lineIdx, 'blankColor', colorIdx)}
+                                                    className={`w-4 h-4 rounded-full shadow ring-2 ${(line.blankColor ?? 0) === colorIdx ? 'ring-gray-700' : 'ring-gray-200'}`}
+                                                    style={{ backgroundColor: c.hex }}
+                                                    title={c.label}
+                                                 />
+                                              ))}
+                                           </div>
                                            <label className="block text-indigo-800 text-[11px] font-bold mb-1">
                                               오디오 묵음 타겟 (muteTargets) <span className="text-indigo-500 font-normal ml-1">※ 싱크 인덱스 입력</span>
                                            </label>
