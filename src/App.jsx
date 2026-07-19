@@ -1,5 +1,60 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
- 
+import previewUnderstand from './assets/preview-understand.png';
+import previewRoleplayA from './assets/preview-roleplay-a.png';
+import previewRoleplayBLook from './assets/preview-roleplay-b-look.png';
+import previewRoleplayBThink from './assets/preview-roleplay-b-think.png';
+import previewRoleplayCLook from './assets/preview-roleplay-c-look.png';
+import previewRoleplayCThink from './assets/preview-roleplay-c-think.png';
+
+// 💡 [1단계 유형 미리보기 팝업] contentType별 대표 예시 이미지.
+// "이 유형은 일반적으로 이렇게 생겼다"는 고정 참고자료이며, 업로드한 특정 페이지의 실제 결과가 아님.
+// 💡 유형별 대표 예시 이미지. roleplay_a/roleplay_b/roleplay_c는 제목에 따라 표시 이름이
+// 더 세분화되므로(Talk and Complete / Look and Talk / Think and Talk 등), 이미지도 그 세분화에
+// 맞춰 여러 장을 매핑할 수 있게 준비해둔다. 아직 확보되지 않은 변형(예: roleplay_c 전체,
+// roleplay_b의 Look and Talk 변형)은 null로 두고, 미리보기 팝업에서 "준비 중" 안내로 대체한다.
+const TYPE_PREVIEW_IMAGES = {
+  understand: { default: previewUnderstand },
+  roleplay_a: { default: previewRoleplayA },
+  roleplay_b: { lookAndTalk: previewRoleplayBLook, thinkAndTalk: previewRoleplayBThink, default: previewRoleplayBThink },
+  roleplay_c: { lookAndTalk: previewRoleplayCLook, thinkAndTalk: previewRoleplayCThink, default: previewRoleplayCLook },
+};
+
+function getPreviewImageSrc(contentType, title) {
+  const bucket = TYPE_PREVIEW_IMAGES[contentType];
+  if (!bucket) return null;
+  const t = String(title || '').toLowerCase();
+  // 💡 제목이 특정 변형(Look and Talk / Think and Talk)과 일치하는데 그 변형 전용 이미지가
+  // 없으면, 다른 변형 이미지로 잘못 대체하지 않고 null을 반환해 "준비 중"으로 표시한다.
+  if (t.includes('look and talk')) return bucket.lookAndTalk || null;
+  if (t.includes('think and talk')) return bucket.thinkAndTalk || null;
+  return bucket.default || null;
+}
+
+// 💡 [유형 표시 이름] contentType은 내부 코드 분기용 값이고, 사용자에게 보여주는 이름은
+// AI가 추출한 실제 제목 텍스트(title)를 함께 봐서 결정한다. roleplay_a/roleplay_c 분기는
+// 이미 제목 키워드로 나뉜 상태이므로(analyzeImageWithAI의 parsedType 결정 로직 참고),
+// 여기서는 그 결과에 맞는 표시 문구만 고른다. 제목이 알려진 키워드와 매칭 안 되면
+// 추출된 원본 제목을 그대로 보여준다(사용자 확정 결정).
+function getDisplayTypeName(contentType, title) {
+  const t = String(title || '').toLowerCase();
+  if (contentType === 'understand') return 'Understand';
+  if (contentType === 'roleplay_a') {
+    if (t.includes('talk and complete')) return 'Talk and Complete';
+    return String(title || 'Talk and Complete');
+  }
+  if (contentType === 'roleplay_c') {
+    if (t.includes('look and talk')) return 'Look and Talk - 2';
+    if (t.includes('think and talk')) return 'Think and Talk - 2';
+    return String(title || '');
+  }
+  if (contentType === 'roleplay_b') {
+    if (t.includes('look and talk')) return 'Look and Talk - 1';
+    if (t.includes('think and talk')) return 'Think and Talk - 1';
+    return String(title || '');
+  }
+  return String(title || '');
+}
+
 // --- [IndexedDB 템플릿 저장 로직] ---
 const DB_NAME = 'ContentBuilderDB_V6';
 const STORE_NAME = 'templates';
@@ -288,16 +343,42 @@ const INIT_ROLEPLAY_B_SCENES = [
     ]
   }
 ];
- 
+
+// 💡 [롤플레이 C형 — 실제 마스터 템플릿(view01.js/html) 확인 결과] 표 퀴즈 대신, 화면 하단
+// 좌우 화살표+점(dots)으로 넘겨보는 여러 "페이지"(대화 갈래, 예: Yes/No 분기)를 갖는 구조임이
+// 확인됨(`contentData.rolePlay.pages` 배열, 페이지마다 완결된 전체 대사 세트). 대사 자체의
+// 턴/줄 구조는 A형과 동일해서 각 페이지는 INIT_ROLEPLAY_DATA.dialogues와 같은 형태를 쓴다.
+const INIT_ROLEPLAY_C_PAGES = [
+  {
+    pageId: 0,
+    dialogues: [
+      { speaker: "A", lines: [{ sentence: "Have you heard about the new movie?", kor: "새로 나온 영화에 대해 들어봤어?", audio_id: "", hasBlank: false, muteTargets: "0" }] },
+      { speaker: "B", lines: [{ sentence: "Yes, I have. I heard it has a great story.", kor: "응, 들었어. 이야기가 멋지다고 들었어.", audio_id: "", hasBlank: false, muteTargets: "0" }] },
+      { speaker: "A", lines: [{ sentence: "Let's watch it together.", kor: "함께 보러 가자.", audio_id: "", hasBlank: false, muteTargets: "0" }] },
+      { speaker: "B", lines: [{ sentence: "Sounds good! I'm looking forward to it.", kor: "좋아! 기대된다.", audio_id: "", hasBlank: false, muteTargets: "0" }] }
+    ]
+  },
+  {
+    pageId: 1,
+    dialogues: [
+      { speaker: "A", lines: [{ sentence: "Have you heard about the new movie?", kor: "새로 나온 영화에 대해 들어봤어?", audio_id: "", hasBlank: false, muteTargets: "0" }] },
+      { speaker: "B", lines: [{ sentence: "No, I haven't.", kor: "아니, 못 들었어.", audio_id: "", hasBlank: false, muteTargets: "0" }] },
+      { speaker: "A", lines: [{ sentence: "I heard it has a great story. I'm looking forward to it.", kor: "이야기가 멋지다고 들었어. 기대된다.", audio_id: "", hasBlank: false, muteTargets: "0" }] },
+      { speaker: "B", lines: [{ sentence: "Sounds good! Let's watch it together.", kor: "좋아! 함께 보러 가자.", audio_id: "", hasBlank: false, muteTargets: "0" }] }
+    ]
+  }
+];
+
 export default function App() {
   const [isAdminMode, setIsAdminMode] = useState(false);
-  const [templates, setTemplates] = useState({ understand: null, roleplay: null, roleplay_b: null });
+  const [templates, setTemplates] = useState({ understand: null, roleplay_a: null, roleplay_b: null, roleplay_c: null });
  
   const [currentPage, setCurrentPage] = useState(1);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [contentType, setContentType] = useState('understand');
-  
+  const [showTypePreview, setShowTypePreview] = useState(false);
+
   const [croppedViews, setCroppedViews] = useState([]);
   const [extractedDialogues, setExtractedDialogues] = useState([]);
   const [extractedTableQuiz, setExtractedTableQuiz] = useState(null);
@@ -306,6 +387,10 @@ export default function App() {
   // 교과서 지면에 없는 경우도 많아 사용자가 직접 업로드하는 방식으로 결정됨(handleSceneImageUpload).
   // AI가 장면을 여러 개로 나눠 인식하지 못했을 때(단일 뷰)는 빈 배열로 두고 extractedDialogues로 폴백한다.
   const [extractedScenesB, setExtractedScenesB] = useState([]);
+  // 💡 [롤플레이 C 전용] 화살표 분기 대화(8-1번 지시) 인식 결과 — AI가 갈래를 2개 이상의 views로
+  // 나눠 인식했을 때, 각 항목이 { dialogues: 그 갈래의 대사 배열(turn/lines 형태) }. 갈래를 못
+  // 나눴을 때(단일 view)는 빈 배열로 두고 extractedDialogues(단일 flat 목록)로 폴백한다.
+  const [extractedPagesC, setExtractedPagesC] = useState([]);
   // 💡 [롤플레이 B 전용] AI가 추출한 '교체 표현 영역'(tips) — 페이지(지면)당 1묶음이라
   // 씬별로 나누지 않고 별도 상태로 두고, 편집 패널이 직접 읽어 읽기 전용으로 보여준다.
   // view 자동 전개(단일 슬롯형)는 추출 프롬프트가 이미 끝내두므로 여기서 추가로 조합하지 않는다.
@@ -340,6 +425,10 @@ export default function App() {
   // 렌더링된 위치(offsetLeft/Top)를 실측해서 그 줄 바로 아래에 절대위치로 배치하기 위한 참조/상태.
   const rolePlayScriptRef = useRef(null);
   const [roleplayKorFragments, setRoleplayKorFragments] = useState([]);
+  // 💡 [롤플레이 C형 — A형 ref/state를 그대로 복제] 캔버스 렌더링·한글 배치는 A형과 물리적으로
+  // 분리된 별도 블록을 쓰므로, DOM 참조와 실측 결과도 A형과 공유하지 않고 따로 둔다.
+  const rolePlayScriptRefC = useRef(null);
+  const [roleplayCKorFragments, setRoleplayCKorFragments] = useState([]);
 
   // 💡 [롤플레이 B 전용 구역] 마스터 템플릿(view01.js/css) 확인 결과, B형은 A형과 달리 실측
   // 기반 절대배치가 아니라 .sentence-group(flex-column) 구조로 영어 문장 바로 아래에 한글이
@@ -400,12 +489,13 @@ export default function App() {
  
   useEffect(() => {
     loadAllTemplatesDB().then(savedData => {
-      const loadedTemplates = { understand: null, roleplay: null, roleplay_b: null };
-      
+      const loadedTemplates = { understand: null, roleplay_a: null, roleplay_b: null, roleplay_c: null };
+
       // 기획 롤백 복구를 위해 가이드 ZIP 디폴트 객체 매핑 안정적 보존
       loadedTemplates.understand = { name: "Understand_Default.zip", blob: new Blob() };
-      loadedTemplates.roleplay = { name: "Roleplay_A_Default.zip", blob: new Blob() };
+      loadedTemplates.roleplay_a = { name: "Roleplay_A_Default.zip", blob: new Blob() };
       loadedTemplates.roleplay_b = { name: "Roleplay_B_Default.zip", blob: new Blob() };
+      loadedTemplates.roleplay_c = { name: "Roleplay_C_Default.zip", blob: new Blob() };
  
       if (savedData && savedData.length > 0) {
         savedData.forEach(item => {
@@ -499,8 +589,26 @@ export default function App() {
  
       if (lastNetworkError) throw lastNetworkError;
       const aiData = await response.json();
-      
-      const parsedType = aiData.contentType === 'roleplay_b' ? 'roleplay_b' : (aiData.contentType === 'roleplay' ? 'roleplay' : 'understand');
+
+      // 💡 AI는 여전히 'understand'/'roleplay'/'roleplay_b' 3종만 판정한다(분류 로직 자체는 불변).
+      // 'roleplay'로 판정된 경우(=AI가 이미 "교체 표현 영역 없음"을 확정한 상태), 저작 도구가
+      // 표 퀴즈(tableQuiz) 데이터 유무로 한 번 더 나눈다 — 있으면 roleplay_a(A형), 없으면
+      // roleplay_c(C형). 제목 텍스트("Look and Talk" 등)는 더 이상 분류 기준이 아니고, 화면에
+      // 보여줄 이름(getDisplayTypeName)을 고르는 용도로만 쓴다.
+      //
+      // 우선순위 확정(사용자 결정): 1순위 = 표 퀴즈 유무(있으면 A), 2순위 = 교체 표현 영역(Tips)
+      // 유무(없으면 C, 있으면 B). 단, 이 순서가 안전하려면 "표 퀴즈와 Tips 박스가 한 지면에
+      // 동시에 존재하지 않는다"는 도메인 전제가 필요하다 — 현재 AI 프롬프트는 tips가 감지되면
+      // (roleplay_b 경로) 그 경로에서 표 퀴즈를 아예 추출 시도하지 않으므로, 만약 실제로 두 요소가
+      // 공존하는 지면이 나오면 표 퀴즈 데이터를 못 받아 이 우선순위를 적용할 수 없다. 사용자가
+      // "그럴 일은 없다"고 확인했으므로 지금은 이 전제 하에 그대로 둔다 — 실제로 그런 지면이
+      // 나오면 lib/analyzePrompt.js의 B형 추출 지시문(9번)에 표 퀴즈 체크를 추가해야 한다.
+      const rawType = aiData.contentType === 'roleplay_b' ? 'roleplay_b' : (aiData.contentType === 'roleplay' ? 'roleplay' : 'understand');
+      let parsedType = rawType;
+      if (rawType === 'roleplay') {
+        const hasTableQuiz = !!(aiData.tableQuiz && Array.isArray(aiData.tableQuiz.headers) && aiData.tableQuiz.headers.length > 0);
+        parsedType = hasTableQuiz ? 'roleplay_a' : 'roleplay_c';
+      }
       setContentType(parsedType);
  
       if (aiData.instruction || aiData.title || aiData.letter) {
@@ -515,7 +623,7 @@ export default function App() {
          }));
       }
  
-      if (parsedType === 'roleplay') {
+      if (parsedType === 'roleplay_a') {
           // 💡 [A형 — 기존 로직 그대로 유지] 컷 구분 없는 단일 뷰 대화 추출.
           let dials = [];
           if (aiData.views && aiData.views[0] && aiData.views[0].eng) {
@@ -531,6 +639,7 @@ export default function App() {
           if (dials.length === 0) dials = INIT_ROLEPLAY_DATA.dialogues;
           setExtractedDialogues(dials);
           setExtractedScenesB([]);
+          setExtractedPagesC([]);
           setExtractedTips([]); // A형은 교체 표현 영역(tips) 개념이 없음
 
           // 💡 이미지에 표 퀴즈가 함께 있으면 헤더/고정 행 텍스트도 같이 읽어온다. 오디오 ID는
@@ -543,6 +652,42 @@ export default function App() {
           } else {
               setExtractedTableQuiz(null);
           }
+      } else if (parsedType === 'roleplay_c') {
+          // 💡 [C형] AI가 화살표 분기(8-1번 지시)를 인식하면 갈래 개수만큼 views를 나눠서 돌려준다 —
+          // 이 경우 views.length > 1이며, 각 view는 "공통 대사부터 그 갈래 끝까지" 전부 담은 완결된
+          // 대화다. views가 1개뿐이면(분기 없는 일반 A형류 지면) 기존처럼 flat 목록 하나로 취급하고,
+          // startEditing()에서 1번 페이지로 쓰고 2번 페이지는 복제해서 채운다.
+          // parsedType이 'roleplay_c'가 됐다는 것 자체가 이미 "aiData.tableQuiz 없음"을 뜻하므로
+          // (분류 로직 참고), 표 퀴즈 추출은 시도하지 않는다 — C형에는 애초에 그 개념이 없다.
+          const viewsArrayC = Array.isArray(aiData?.views) ? aiData.views : [];
+
+          if (viewsArrayC.length > 1) {
+              const pages = viewsArrayC.map((v) => ({
+                  dialogues: (v.eng || []).map((item, idx) => ({
+                      speaker: item.speaker || (idx % 2 === 0 ? "A" : "B"),
+                      lines: [{ sentence: item.sentence || item.en || "", kor: item.kor || item.ko || "", audio_id: "", hasBlank: false, muteTargets: "0" }]
+                  }))
+              }));
+              setExtractedPagesC(pages);
+              setExtractedDialogues([]);
+          } else {
+              let dials = [];
+              if (viewsArrayC[0] && viewsArrayC[0].eng) {
+                  dials = (viewsArrayC[0].eng || []).map((item, idx) => ({
+                      speaker: item.speaker || (idx % 2 === 0 ? "A" : "B"),
+                      sentence: item.sentence || item.en || "",
+                      kor: item.kor || item.ko || "",
+                      audio_id: "",
+                      hasBlank: false,
+                      muteTargets: "0"
+                  }));
+              }
+              setExtractedDialogues(dials);
+              setExtractedPagesC([]);
+          }
+          setExtractedScenesB([]);
+          setExtractedTips([]); // C형은 교체 표현 영역(tips) 개념이 없음
+          setExtractedTableQuiz(null); // C형은 표 퀴즈 개념이 없음
       } else if (parsedType === 'roleplay_b') {
           // 💡 [B형 전용 구역] AI가 씬을 2개 이상으로 나눠 인식했으면 씬별 대사로 분리 매핑한다.
           // 씬 이미지는 교과서 지면에 실제 콘텐츠 이미지가 없는 경우도 많아(사용자 확인),
@@ -566,6 +711,7 @@ export default function App() {
               });
               setExtractedScenesB(scenes);
               setExtractedDialogues([]);
+              setExtractedPagesC([]);
           } else {
               let dials = [];
               if (viewsArray[0] && viewsArray[0].eng) {
@@ -579,6 +725,7 @@ export default function App() {
               if (dials.length === 0) dials = INIT_ROLEPLAY_B_SCENES[0].dialogues;
               setExtractedDialogues(dials);
               setExtractedScenesB([]);
+              setExtractedPagesC([]);
           }
           setExtractedTableQuiz(null);
       } else {
@@ -594,6 +741,7 @@ export default function App() {
           }
           setCroppedViews(processedViews);
           setExtractedTips([]); // understand는 tips 개념이 없음
+          setExtractedPagesC([]);
       }
       showToast("✨ AI 분석 완료!");
     } catch (error) {
@@ -615,6 +763,7 @@ export default function App() {
       }
       setCroppedViews(fallbackViews);
       setExtractedTips([]);
+      setExtractedPagesC([]);
     } finally {
       setIsAnalyzing(false);
     }
@@ -698,6 +847,37 @@ export default function App() {
         return prev;
       }
       const next = (prev || []).filter((_, sIdx) => sIdx !== idx);
+      setActiveViewIdx(current => Math.min(current, next.length - 1));
+      return next;
+    });
+  };
+
+  // 💡 [롤플레이 C형 전용] 표 퀴즈 대신 여러 "페이지"(대화 갈래, 예: Yes/No 분기)를 갖는다
+  // (실제 마스터 템플릿 view01.js/html 확인 결과, contentData.rolePlay.pages 배열). 새 페이지는
+  // 빈 대사가 아니라 현재 1번 페이지의 대사를 복제해서 시작한다 — B형 씬 복제 관례(2-32)와
+  // 동일하게, 사용자가 매번 대사 전체를 새로 타이핑하지 않고 갈리는 부분만 고치게 하기 위함.
+  const addPageC = () => {
+    if (contentType !== 'roleplay_c') return;
+    setPageData(prev => {
+      const nextIdx = (prev || []).length;
+      const baseDialogues = (prev && prev[0] && prev[0].dialogues && prev[0].dialogues.length > 0)
+        ? JSON.parse(JSON.stringify(prev[0].dialogues))
+        : JSON.parse(JSON.stringify(INIT_ROLEPLAY_C_PAGES[0].dialogues));
+      const newPage = { pageId: nextIdx, dialogues: baseDialogues, id: `page_c_${Date.now()}_${nextIdx}` };
+      const next = [...(prev || []), newPage];
+      setActiveViewIdx(next.length - 1);
+      return next;
+    });
+  };
+
+  const deletePageC = (idx) => {
+    if (contentType !== 'roleplay_c') return;
+    setPageData(prev => {
+      if ((prev || []).length <= 1) {
+        showToast("⚠️ 최소 1개의 페이지는 남아있어야 합니다.");
+        return prev;
+      }
+      const next = (prev || []).filter((_, pIdx) => pIdx !== idx);
       setActiveViewIdx(current => Math.min(current, next.length - 1));
       return next;
     });
@@ -822,7 +1002,7 @@ export default function App() {
             dialogues: baseDialoguesForFallback.map(d => ({ ...d }))
           }));
       setPageData(initialScenes);
-    } else if (contentType === 'roleplay') {
+    } else if (contentType === 'roleplay_a') {
       // 💡 extractedDialogues는 A/B형이 공유하는 평평한 중간 포맷(1항목=1줄)이라, 롤플레이 A형이 쓰는
       // "턴 안에 여러 줄" 중첩 구조({ speaker, lines: [...] })로 감싸서 넣어준다.
       const initialDialogues = extractedDialogues.length > 0
@@ -837,6 +1017,32 @@ export default function App() {
         ? { ...INIT_ROLEPLAY_DATA.tableQuiz, headers: extractedTableQuiz.headers, staticRow: extractedTableQuiz.staticRow }
         : INIT_ROLEPLAY_DATA.tableQuiz;
       setPageData([{ ...INIT_ROLEPLAY_DATA, dialogues: initialDialogues, tableQuiz: initialTableQuiz, id: `box_${Date.now()}_roleplay` }]);
+    } else if (contentType === 'roleplay_c') {
+      // 💡 [C형 — 실제 마스터 템플릿 구조] 표 퀴즈가 아니라 여러 "페이지"(대화 갈래) 배열이다.
+      const now = Date.now();
+      if (extractedPagesC.length > 0) {
+        // 💡 AI가 화살표 분기(8-1번 지시)를 갈래별 views로 인식한 경우 — 각 view가 이미
+        // "공통 대사 + 그 갈래 끝까지"를 전부 담은 완결된 대화라, 그대로 페이지로 매핑하면 된다.
+        setPageData(extractedPagesC.map((page, idx) => ({
+          pageId: idx,
+          dialogues: page.dialogues,
+          id: `page_c_${now}_${idx}`
+        })));
+      } else {
+        // 💡 AI가 갈래를 구분하지 못했을 때(단일 flat 대사만 줌) — extractedDialogues를 1번
+        // 페이지로 쓰고, 2번 페이지는 그 내용을 복제해서 시작한다(사용자가 두 번째 갈래로 고쳐
+        // 쓰면 됨) — B형 addSceneB의 "씬 1 대사 복제" 관례(2-32)와 동일한 이유.
+        const initialDialogues = extractedDialogues.length > 0
+          ? extractedDialogues.map(item => ({
+              speaker: item.speaker || "A",
+              lines: [{ sentence: item.sentence || "", kor: item.kor || "", audio_id: item.audio_id || "", hasBlank: item.hasBlank || false, muteTargets: item.muteTargets !== undefined ? item.muteTargets : "0" }]
+            }))
+          : INIT_ROLEPLAY_C_PAGES[0].dialogues;
+        setPageData([
+          { pageId: 0, dialogues: initialDialogues, id: `page_c_${now}_0` },
+          { pageId: 1, dialogues: JSON.parse(JSON.stringify(initialDialogues)), id: `page_c_${now}_1` }
+        ]);
+      }
     } else {
       const initialData = (croppedViews || []).map((crop, idx) => {
         const tpl = TEMPLATE_UNDERSTAND[idx] || {
@@ -1004,7 +1210,7 @@ export default function App() {
   // 배치. zipper와 동일하게 실제 렌더링된 DOM 위치를 측정해서 절대위치로 끼워넣는다 — 브라우저가
   // 각 줄(.rp-line-eng)을 컨테이너 폭에 맞춰 자동 줄바꿈하므로, 그려보기 전에는 위치를 알 수 없다.
   useLayoutEffect(() => {
-    if (contentType !== 'roleplay' || !activeData) {
+    if (contentType !== 'roleplay_a' || !activeData) {
       setRoleplayKorFragments(prev => (prev.length > 0 ? [] : prev));
       return;
     }
@@ -1071,8 +1277,71 @@ export default function App() {
     }
   }, [activeData, scale, contentType]);
 
+  // 💡 [롤플레이 C형 — A형 실측 로직을 그대로 복제] rolePlayScriptRefC/roleplayCKorFragments라는
+  // 별도 ref/state를 써서, A형의 DOM 실측과 완전히 독립적으로 동작한다.
+  useLayoutEffect(() => {
+    if (contentType !== 'roleplay_c' || !activeData) {
+      setRoleplayCKorFragments(prev => (prev.length > 0 ? [] : prev));
+      return;
+    }
+    const containerEl = rolePlayScriptRefC.current;
+    if (!containerEl) return;
+
+    const measure = () => {
+      if (!containerEl.isConnected) return;
+      const s = scale || 1;
+      const newFragments = [];
+
+      containerEl.querySelectorAll('[data-turn-idx]').forEach((turnEl) => {
+        const dialIdx = Number(turnEl.dataset.turnIdx);
+        const turn = activeData.dialogues?.[dialIdx];
+        if (!turn) return;
+        const lines = (turn.lines && turn.lines.length > 0)
+          ? turn.lines
+          : [{ sentence: turn.sentence || '', kor: turn.kor || '' }];
+
+        const contentEl = turnEl.querySelector('.rp-turn-content');
+        if (!contentEl) return;
+        const contentRect = contentEl.getBoundingClientRect();
+
+        turnEl.querySelectorAll('.rp-line-eng').forEach((lineEl, lineIdx) => {
+          const line = lines[lineIdx];
+          if (!line || !line.kor) return;
+          const rects = lineEl.getClientRects();
+          if (!rects || rects.length === 0) return;
+
+          let remainder = line.kor;
+          for (let i = 0; i < rects.length && remainder; i++) {
+            const rect = rects[i];
+            const left = (rect.left - contentRect.left) / s + 3;
+            const availWidth = Math.max(60, rect.width / s);
+            const isLastRow = (i === rects.length - 1);
+            let text;
+            if (isLastRow) {
+              text = remainder;
+              remainder = '';
+            } else {
+              const { firstLine, rest } = splitTextForRowWidth(remainder, availWidth, 'NanumGothicBold, sans-serif', 15, 1.8, 'keep-all');
+              text = firstLine;
+              remainder = rest;
+            }
+            const top = (rect.top - contentRect.top) / s + 28;
+            newFragments.push({ key: `${dialIdx}-${lineIdx}-${i}`, turnIdx: dialIdx, left, top, text, maxWidth: availWidth });
+          }
+        });
+      });
+
+      setRoleplayCKorFragments(newFragments);
+    };
+
+    measure();
+    if (document.fonts && document.fonts.status !== 'loaded') {
+      document.fonts.ready.then(() => requestAnimationFrame(measure));
+    }
+  }, [activeData, scale, contentType]);
+
   const handleMouseDown = (e, id) => {
-    if (contentType === 'roleplay' || contentType === 'roleplay_b') return;
+    if (contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return;
     e.preventDefault();
     if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') return;
     if(!containerRef.current) return;
@@ -1082,7 +1351,7 @@ export default function App() {
   };
   
   const handleMouseMove = (e) => {
-    if (!draggingBoxId || !containerRef.current || contentType === 'roleplay' || contentType === 'roleplay_b') return;
+    if (!draggingBoxId || !containerRef.current || contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return;
     const rect = containerRef.current.getBoundingClientRect();
     let newX = (e.clientX - rect.left) / (rect.width / 1280) - dragOffset.x;
     let newY = (e.clientY - rect.top) / (rect.height / 720) - dragOffset.y;
@@ -1109,7 +1378,7 @@ export default function App() {
  
   const handleTextTypeChange = (newType) => {
     setPageData(prev => (prev || []).map((data, idx) => {
-      if (idx !== activeViewIdx || contentType === 'roleplay' || contentType === 'roleplay_b') return data;
+      if (idx !== activeViewIdx || contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return data;
       let newEng = [...(data.text?.eng || [])];
       const oldType = data.text?.type || 'inline';
       if ((oldType === 'inline' || oldType === 'zipper') && newType === 'lines') {
@@ -1127,7 +1396,7 @@ export default function App() {
   const handleSentenceChange = (engIdx, field, value) => {
     setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx) return data;
-      if (contentType === 'roleplay') {
+      if (contentType === 'roleplay_a' || contentType === 'roleplay_c') {
           const newDialogues = [...(data.dialogues || [])];
           newDialogues[engIdx] = { ...newDialogues[engIdx], [field]: value };
           return { ...data, dialogues: newDialogues };
@@ -1140,7 +1409,7 @@ export default function App() {
   };
   
   const handleLinesChange = (engIdx, lineIdx, field, value) => {
-    if (contentType === 'roleplay' || contentType === 'roleplay_b') return;
+    if (contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return;
     setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx) return data;
       const newEng = [...(data.text?.eng || [])];
@@ -1153,17 +1422,20 @@ export default function App() {
   
   const addSentence = () => setPageData(prev => (prev || []).map((data, idx) => {
      if (idx !== activeViewIdx) return data;
-     if (contentType === 'roleplay') {
+     if (contentType === 'roleplay_a' || contentType === 'roleplay_c') {
          return { ...data, dialogues: [...(data.dialogues || []), { speaker: "A", lines: [{ sentence: "", kor: "", audio_id: "", hasBlank: false, muteTargets: "0" }] }] };
      }
      return { ...data, text: { ...data.text, eng: [...(data.text?.eng || []), { sentence: "", kor: "", audio_id: "" }] } };
   }));
 
-  // 💡 [롤플레이 A형 전용] 한 턴(같은 화자) 안에 오디오/빈칸이 독립적인 줄을 여러 개 담을 수 있도록
+  // 💡 [롤플레이 A형/C형 공용] 한 턴(같은 화자) 안에 오디오/빈칸이 독립적인 줄을 여러 개 담을 수 있도록
   // dialogues[i].lines 배열 단위로 조작하는 함수들. 턴 자체의 추가/삭제/화자 변경은 기존 addSentence/
   // removeSentence/handleSentenceChange가 그대로 담당한다.
+  // A형과 C형은 데이터 구조·편집 동작이 동일해서 이 CRUD 헬퍼는 공유하고, 화면에 직접 보이는
+  // 캔버스 렌더링·속성편집 패널 JSX만 별도로 복제한다(추후 C형이 실제로 다른 데이터 조작이
+  // 필요해지면 그때 이 함수들도 분리한다).
   const handleDialogueLineChange = (dialIdx, lineIdx, field, value) => setPageData(prev => (prev || []).map((data, idx) => {
-      if (idx !== activeViewIdx || contentType !== 'roleplay') return data;
+      if (idx !== activeViewIdx || (contentType !== 'roleplay_a' && contentType !== 'roleplay_c')) return data;
       const newDialogues = [...(data.dialogues || [])];
       const turn = newDialogues[dialIdx];
       if (!turn) return data;
@@ -1174,7 +1446,7 @@ export default function App() {
   }));
 
   const addDialogueLine = (dialIdx) => setPageData(prev => (prev || []).map((data, idx) => {
-      if (idx !== activeViewIdx || contentType !== 'roleplay') return data;
+      if (idx !== activeViewIdx || (contentType !== 'roleplay_a' && contentType !== 'roleplay_c')) return data;
       const newDialogues = [...(data.dialogues || [])];
       const turn = newDialogues[dialIdx];
       if (!turn) return data;
@@ -1183,7 +1455,7 @@ export default function App() {
   }));
 
   const removeDialogueLine = (dialIdx, lineIdx) => setPageData(prev => (prev || []).map((data, idx) => {
-      if (idx !== activeViewIdx || contentType !== 'roleplay') return data;
+      if (idx !== activeViewIdx || (contentType !== 'roleplay_a' && contentType !== 'roleplay_c')) return data;
       const newDialogues = [...(data.dialogues || [])];
       const turn = newDialogues[dialIdx];
       if (!turn) return data;
@@ -1194,7 +1466,7 @@ export default function App() {
   }));
   
   const addLine = (engIdx) => setPageData(prev => (prev || []).map((data, idx) => {
-      if (idx !== activeViewIdx || contentType === 'roleplay') return data;
+      if (idx !== activeViewIdx || contentType === 'roleplay_a' || contentType === 'roleplay_c') return data;
       const newEng = [...(data.text?.eng || [])];
       newEng[engIdx].lines.push({ en: "", ko: "" });
       return { ...data, text: { ...data.text, eng: newEng } };
@@ -1202,14 +1474,14 @@ export default function App() {
   
   const removeSentence = (engIdx) => setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx) return data;
-      if (contentType === 'roleplay') {
+      if (contentType === 'roleplay_a' || contentType === 'roleplay_c') {
           return { ...data, dialogues: (data.dialogues || []).filter((_, i) => i !== engIdx) };
       }
       return { ...data, text: { ...data.text, eng: (data.text?.eng || []).filter((_, i) => i !== engIdx) } };
   }));
   
   const removeLine = (engIdx, lineIdx) => setPageData(prev => (prev || []).map((data, idx) => {
-      if (idx !== activeViewIdx || contentType === 'roleplay') return data;
+      if (idx !== activeViewIdx || contentType === 'roleplay_a' || contentType === 'roleplay_c') return data;
       const newEng = [...(data.text?.eng || [])];
       newEng[engIdx].lines = (newEng[engIdx].lines || []).filter((_, i) => i !== lineIdx);
       return { ...data, text: { ...data.text, eng: newEng } };
@@ -1351,7 +1623,7 @@ export default function App() {
  
         let fileContent = "";
  
-        if (contentType === 'roleplay') {
+        if (contentType === 'roleplay_a') {
             const rowCount = Number(pageData[0]?.tableQuiz?.rowCount || 3);
             // 💡 [자동 생성] hiddenText는 공통 설정 탭의 '지시문(instruction)'을 그대로 재사용해 구성.
             // 레슨마다 달라지는 주제 설명은 instruction에 이미 담겨 있으므로, 여기에 고정 안내 문구만 덧붙인다.
@@ -1425,7 +1697,69 @@ export default function App() {
                 }
             };
             fileContent = `const contentData = ${JSON.stringify(roleplayExportData, null, 2)};\n`;
- 
+
+        } else if (contentType === 'roleplay_c') {
+            // 💡 [C형 — 실제 마스터 템플릿(view01.js/html) 확인 결과 반영] 표 퀴즈가 아니라, 여러
+            // "페이지"(대화 갈래, 예: Yes/No 분기)를 좌우 화살표+점(dots)으로 넘겨보는 구조.
+            // contentData.rolePlay.pages 배열(각 pageId/dialogues)로 내보내고, tableQuiz 필드는
+            // 아예 넣지 않는다(실제 데이터 기반 동적 렌더링으로 확인됨 — 정적 HTML 아님).
+            const roleplayInstruction = String(globalData.header.instruction || "").trim();
+            const roleplayHiddenText = roleplayInstruction
+                ? `${roleplayInstruction} 롤플레이 활동이 어려울 경우, 선생님께 도움을 요청해 보세요.`
+                : "롤플레이 활동이 어려울 경우, 선생님께 도움을 요청해 보세요.";
+
+            const formatDialogues = (dialogues) => (dialogues || []).map(item => {
+                const rawLines = (item.lines && item.lines.length > 0)
+                    ? item.lines
+                    : [{ sentence: item.sentence, kor: item.kor, audio_id: item.audio_id, hasBlank: item.hasBlank, muteTargets: item.muteTargets }];
+
+                const lines = rawLines.map(line => {
+                    const lineObj = {
+                        hasBlank: line.hasBlank,
+                        audio: String(line.audio_id || ""),
+                        eng: String(line.sentence || ""),
+                        kor: String(line.kor || "")
+                    };
+
+                    if (line.hasBlank) {
+                        lineObj.muteTargets = line.muteTargets !== undefined && String(line.muteTargets).trim() !== ""
+                            ? String(line.muteTargets).split(',').map(s => Number(s.trim()))
+                            : [0];
+                        lineObj.blankColor = Number.isInteger(line.blankColor) ? line.blankColor : 0;
+                    }
+
+                    return lineObj;
+                });
+
+                return { speaker: String(item.speaker || "A"), lines };
+            });
+
+            const roleplayExportData = {
+                pageInfo: {
+                    hiddenText: roleplayHiddenText,
+                    title: {
+                        head: String(globalData.header.letter || ""),
+                        text: String(globalData.header.text || ""),
+                        color: String(globalData.header.color || "")
+                    },
+                    instruction: roleplayInstruction
+                },
+                howToPlay: [
+                    { step: 1, tail: "left", lines: ["버튼을 눌러 예시 대화를", "확인하고 이야기해 보세요."] },
+                    { step: 2, tail: "top", lines: ["역할을 선택해 보세요."] },
+                    { step: 3, tail: "bottom", lines: ["내가 맡은 역할의 대사를", "가리고 말해 보세요."] },
+                    { step: 4, tail: "top", lines: ["화면 하단의 화살표를 눌러", "다른 대화 갈래도 확인해 보세요."] }
+                ],
+                rolePlay: {
+                    toggleBtn: { ariaLabel: "클릭 시 대화창 바꾸기" },
+                    pages: (pageData || []).map((page, idx) => ({
+                        pageId: idx,
+                        dialogues: formatDialogues(page.dialogues)
+                    }))
+                }
+            };
+            fileContent = `const contentData = ${JSON.stringify(roleplayExportData, null, 2)};\n`;
+
         } else if (contentType === 'roleplay_b') {
             const formattedBData = pageData.map((scene, sIdx) => ({
                 type: "B",
@@ -1516,7 +1850,7 @@ export default function App() {
         // contentType 구분 없이 pageData(씬/대화 배열)를 그대로 매핑해서, roleplay_b에서 씬이 여러 개면
         // view_pageinfo가 씬 개수만큼 부풀려졌고, 그 결과 마스터 템플릿이 "여러 페이지가 있다"고 오인해
         // 불필요한 페이지 이동 네비게이션 바(.nav-html)를 그려버렸다.
-        const viewPageInfoData = (contentType === 'roleplay' || contentType === 'roleplay_b')
+        const viewPageInfoData = (contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c')
           ? [{ url: "view01.html" }]
           : (pageData || []).map(data => ({ url: `view${data.view}.html` }));
         const viewPageInfoContent = `const view_pageinfo = ${JSON.stringify(viewPageInfoData, null, 2)};\n`;
@@ -1540,7 +1874,7 @@ export default function App() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = contentType === 'roleplay' ? 'roleplay(A)_content.zip' : (contentType === 'roleplay_b' ? 'roleplay(B)_content.zip' : 'understand_content.zip');
+        a.download = contentType === 'roleplay_a' ? 'roleplay(A)_content.zip' : (contentType === 'roleplay_b' ? 'roleplay(B)_content.zip' : (contentType === 'roleplay_c' ? 'roleplay(C)_content.zip' : 'understand_content.zip'));
         a.click();
         URL.revokeObjectURL(url);
         showToast("✅ 완벽한 구조의 ZIP 패키지 추출이 완료되었습니다!");
@@ -1611,24 +1945,32 @@ export default function App() {
             <h2 className="text-2xl font-bold mb-2 text-red-600 flex items-center gap-2">🛠️ 원본 마스터 ZIP 라이브러리 (교과서 제작 핵심 소스 관리)</h2>
             <p className="text-gray-500 text-sm mb-8">업로드한 ZIP 파일은 브라우저 DB에 영구 저장되므로 매번 올릴 필요가 없습니다. 여기에 등재되는 ZIP 원본들은 기획자들이 제공하는 최종 UI 번들 뼈대입니다. 추출 버튼을 눌렀을 때 엔진이 이 ZIP을 껍데기 삼아 내부의 `data.js`만 동적으로 치환 조립하여 새로운 교과서 노드를 배포해 냅니다.</p>
             
-            <div className="grid grid-cols-3 gap-6">
-              {['understand', 'roleplay', 'roleplay_b'].map((type) => (
+            <div className="grid grid-cols-4 gap-6">
+              {['understand', 'roleplay_a', 'roleplay_b', 'roleplay_c'].map((type) => {
+                const meta = {
+                  understand: { badge: 'U', badgeClass: 'bg-blue-100 text-blue-600', title: 'Understand 유형', desc: '말풍선 이해도 향상 코믹 콘텐츠용 마스터 소스', btnClass: 'bg-blue-600 hover:bg-blue-700' },
+                  roleplay_a: { badge: 'RA', badgeClass: 'bg-purple-100 text-purple-600', title: 'Roleplay(A) 유형', desc: '역할극 대화형 콘텐츠(예: talk and complete)의 마스터 소스', btnClass: 'bg-purple-600 hover:bg-purple-700' },
+                  roleplay_b: { badge: 'RB', badgeClass: 'bg-teal-100 text-teal-600', title: 'Roleplay(B) 유형', desc: '표 퀴즈를 전면 비활성화한 씬 기반 다중 장면극 마스터 소스', btnClass: 'bg-teal-600 hover:bg-teal-700' },
+                  roleplay_c: { badge: 'RC', badgeClass: 'bg-fuchsia-100 text-fuchsia-600', title: 'Roleplay(C) 유형', desc: '표 퀴즈 대신 여러 대화 갈래(페이지)를 넘겨보는 분기형 대화 마스터 소스', btnClass: 'bg-fuchsia-600 hover:bg-fuchsia-700' },
+                }[type];
+                return (
                 <div key={type} className="border border-gray-200 rounded-xl p-5 bg-gray-50 flex flex-col items-center justify-between text-center relative hover:border-gray-300 transition shadow-sm">
                   {templates[type] && (
                     <button onClick={() => handleTemplateDelete(type)} className="absolute top-3 right-3 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded hover:bg-red-500 hover:text-white transition">삭제</button>
                   )}
-                  <div className={`w-16 h-16 rounded-full flex items-center justify-center font-bold text-2xl mb-3 ${type === 'understand' ? 'bg-blue-100 text-blue-600' : type === 'roleplay' ? 'bg-purple-100 text-purple-600' : 'bg-teal-100 text-teal-600'}`}>
-                    {type === 'understand' ? 'U' : type === 'roleplay' ? 'RA' : 'RB'}
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center font-bold text-2xl mb-3 ${meta.badgeClass}`}>
+                    {meta.badge}
                   </div>
-                  <h3 className="font-bold text-lg text-gray-800 mb-1">{type === 'understand' ? 'Understand 유형' : type === 'roleplay' ? 'Roleplay(A) 유형' : 'Roleplay(B) 유형'}</h3>
-                  <p className="text-xs text-gray-400 h-8 mb-4">{type === 'understand' ? '말풍선 이해도 향상 코믹 콘텐츠용 마스터 소스' : type === 'roleplay' ? '역할극 대화형 콘텐츠(예: talk and complete)의 마스터 소스' : '표 퀴즈를 전면 비활성화한 씬 기반 다중 장면극 마스터 소스'}</p>
-                  
+                  <h3 className="font-bold text-lg text-gray-800 mb-1">{meta.title}</h3>
+                  <p className="text-xs text-gray-400 h-8 mb-4">{meta.desc}</p>
+
                   <input type="file" accept=".zip" onChange={(e) => handleTemplateUpload(e, type)} className="hidden" id={`zip-${type}`} />
-                  <label htmlFor={`zip-${type}`} className={`w-full py-2 text-white text-sm font-bold rounded-lg cursor-pointer transition block ${templates[type] ? 'bg-emerald-500 hover:bg-emerald-600' : (type === 'understand' ? 'bg-blue-600 hover:bg-blue-700' : type === 'roleplay' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-teal-600 hover:bg-teal-700')}`}>
+                  <label htmlFor={`zip-${type}`} className={`w-full py-2 text-white text-sm font-bold rounded-lg cursor-pointer transition block ${templates[type] ? 'bg-emerald-500 hover:bg-emerald-600' : meta.btnClass}`}>
                     {templates[type] ? `✅ ${templates[type].name.slice(0, 15)}...` : 'ZIP 마스터 템플릿 등록'}
                   </label>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -1665,7 +2007,21 @@ export default function App() {
                     <div>
                       <h3 className="text-sm font-bold text-gray-700 mb-3">📊 AI 자동 추천 분석 스펙</h3>
                       <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg space-y-2 mb-4">
-                        <div className="flex justify-between text-xs border-b border-gray-200 pb-2"><span className="text-gray-500">콘텐츠 타입</span><span className="font-bold text-teal-600 uppercase">{contentType === 'understand' ? 'Understand (말풍선 기본형)' : contentType === 'roleplay' ? 'Roleplay A (표 퀴즈 결합형)' : 'Roleplay B (퀴즈 없는 대본형)'}</span></div>
+                        <div className="flex justify-between items-center text-xs border-b border-gray-200 pb-2">
+                          <span className="text-gray-500">콘텐츠 타입</span>
+                          <span className="flex items-center gap-1.5">
+                            <span className="font-bold text-teal-600 uppercase">{getDisplayTypeName(contentType, globalData.header.text)}</span>
+                            <button
+                              type="button"
+                              onClick={() => setShowTypePreview(true)}
+                              className="text-[10px] font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded px-1.5 py-0.5 transition"
+                              title="이 유형의 완성 화면 예시 보기"
+                            >
+                              👁 미리보기
+                            </button>
+                            {/* TODO: 유형 변경 버튼 자리 — 유형 간 데이터 매핑 정의 후 추가 예정 */}
+                          </span>
+                        </div>
                         <div className="flex justify-between text-xs border-b border-gray-200 pb-2"><span className="text-gray-500">헤더 발문 자산</span><span className="font-bold text-gray-800">{globalData.header.letter} - {globalData.header.text}</span></div>
                         <div className="flex justify-between text-xs border-b border-gray-200 pb-2"><span className="text-gray-500">지시문 내용</span><span className="font-bold text-gray-800 max-w-[200px] truncate">{globalData.header.instruction}</span></div>
                         <div className="flex justify-between text-xs"><span className="text-gray-500">정렬 뷰 개수</span><span className="font-bold text-indigo-600">{contentType === 'understand' ? croppedViews.length : '1 Scene (동적 멀티전환)'}</span></div>
@@ -1686,7 +2042,41 @@ export default function App() {
           </div>
         </div>
       )}
- 
+
+      {/* 💡 [1단계] 유형 미리보기 라이트박스 — 판정된 contentType의 완성 화면 대표 예시를 보여줌 */}
+      {showTypePreview && (
+        <div
+          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-6"
+          onClick={() => setShowTypePreview(false)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl max-w-xl w-full max-h-[80vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center px-4 py-3 border-b border-gray-200 shrink-0">
+              <h3 className="text-sm font-bold text-gray-800">
+                {getDisplayTypeName(contentType, globalData.header.text)} 완성 예시
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowTypePreview(false)}
+                className="text-gray-400 hover:text-gray-700 text-lg leading-none"
+                aria-label="닫기"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 overflow-auto">
+              {getPreviewImageSrc(contentType, globalData.header.text) ? (
+                <img src={getPreviewImageSrc(contentType, globalData.header.text)} alt={`${contentType} 완성 화면 예시`} className="w-full h-auto rounded-lg border border-gray-200" />
+              ) : (
+                <div className="py-16 text-center text-sm text-gray-400">이 유형의 예시 이미지는 아직 준비 중입니다.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 2단계: 인터랙티브 캔버스 저작 공간 */}
       {!isAdminMode && currentPage === 2 && activeData && (
         <div className="flex-1 flex overflow-hidden bg-gray-300 animate-none" onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
@@ -1697,8 +2087,16 @@ export default function App() {
                  {contentType === 'understand' && (pageData || []).map((data, idx) => (
                     <button key={data.id} onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>View {String(data.view || '')}</button>
                   ))}
-                  {contentType === 'roleplay' && (
-                    <button className="px-5 py-1.5 text-sm font-bold rounded-full bg-purple-600 text-white shadow-md">Roleplay A View</button>
+                  {contentType === 'roleplay_a' && (
+                    <button className="px-5 py-1.5 text-sm font-bold rounded-full bg-purple-600 text-white shadow-md whitespace-nowrap">{getDisplayTypeName(contentType, globalData.header.text)}</button>
+                  )}
+                  {contentType === 'roleplay_c' && (
+                    <>
+                      {(pageData || []).map((page, idx) => (
+                        <button key={page.id} onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-fuchsia-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>Page {idx + 1}</button>
+                      ))}
+                      <button onClick={addPageC} className="px-4 py-1.5 text-sm font-bold rounded-full whitespace-nowrap border-2 border-dashed border-fuchsia-400 text-fuchsia-600 hover:bg-fuchsia-50 transition">+ 페이지 추가</button>
+                    </>
                   )}
                   {contentType === 'roleplay_b' && (
                     <>
@@ -1855,9 +2253,12 @@ export default function App() {
                 )}
  
                  {/* 🗣️ 롤플레이 뷰어 (A형 및 B형 분기 렌더링) */}
-                 {(contentType === 'roleplay' || contentType === 'roleplay_b') && (
+                 {(contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') && (
                      <div style={{ position: 'relative', width: '100%', height: '100%', paddingTop: '100px' }}>
-                        <div style={{ position: 'absolute', top: 210, left: 40, width: 45, height: 35, backgroundColor: '#b5eae6', borderRadius: 20, display: 'flex', justifyItems: 'center', justifyContent: 'center', alignItems: 'center', color: '#008b8b', fontWeight: 'bold', fontSize: 18 }}>e.g.</div>
+                        {/* 💡 [C형 전용 좌표] 마스터 템플릿 CSS 확정값: .btn-eg{left:1064,top:250,z-index:2} —
+                            C형은 대사 박스(left:156,top:237,width:968)가 넓어서, e.g. 배지가 그 박스
+                            우상단 안쪽(box right 1124 - 60 여백)에 위치해야 한다. A/B형은 기존 좌표 유지. */}
+                        <div style={{ position: 'absolute', top: contentType === 'roleplay_c' ? 250 : 210, left: contentType === 'roleplay_c' ? 1064 : 40, width: 45, height: 35, backgroundColor: '#b5eae6', borderRadius: 20, display: 'flex', justifyItems: 'center', justifyContent: 'center', alignItems: 'center', color: '#008b8b', fontWeight: 'bold', fontSize: 18, zIndex: 2 }}>e.g.</div>
  
                         <div style={{ position: 'absolute', left: 404.6, top: 143.75, width: 183, height: 80, border: '2px solid #e2e8f0', borderRadius: '40px', backgroundColor: '#fff', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px' }}>
                            <button style={{ padding: '5px 10px', color: '#9ca3af', fontWeight: 'bold', border: 'none', background: 'transparent' }}>A</button>
@@ -1966,6 +2367,84 @@ export default function App() {
                                );
                              })()}
                           </>
+                        ) : contentType === 'roleplay_c' ? (
+                          /* 💡 [C형 — 실제 마스터 템플릿(view01.js/html/css) 확인 결과 반영]
+                             표 퀴즈가 아니라, 화면 하단 좌우 화살표+점(dots)으로 넘겨보는 여러
+                             "페이지"(대화 갈래, 예: Yes/No 분기) 구조. 대사 박스는 표 퀴즈가 있던
+                             공간까지 포함해 넓게 차지한다(마스터 CSS 확정값: left:156, top:237,
+                             width:968, height:376 — .role-play-script-page도 동일 left/width). */
+                          <>
+                             <style>{`.rp-script-c .emp.col-0{color:#b42c13}.rp-script-c .emp.col-1{color:#018f9e}.rp-script-c .emp.col-2{color:#e0629d}`}</style>
+                             {/* 💡 실제 마스터 DOM 구조: .role-play-script(바깥, overflow 없음, 해석 버튼이
+                                 여기 자식으로 붙음) > scrollBox(안쪽, overflowY:auto, 대사 턴들만 담음).
+                                 해석 버튼이 스크롤 영역 밖(bottom:-50)에 위치해야 해서 두 겹으로 나눈다. */}
+                             <div ref={rolePlayScriptRefC} className="rp-script-c" style={{ position: 'absolute', left: 156, top: 237, width: 968, height: 376, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0' }}>
+                                {/* 💡 [겹침 방지] e.g. 배지(left:1064~1109, 박스 기준 우측에서 60px 지점)가 대사
+                                    텍스트/스크롤바와 같은 x축 구간에 있어, 대사가 길어져 스크롤이 생기면 배지 밑을
+                                    텍스트가 지나가며 겹친다. 우측 패딩을 배지 폭+여백만큼(70px) 확보해 항상 그
+                                    구간 앞에서 줄바꿈되게 한다 — 마스터 템플릿도 동일 문제가 있어 별도 요청함. */}
+                                <div style={{ width: '100%', height: '100%', overflowY: 'auto', padding: '15px 70px 15px 30px', boxSizing: 'border-box' }}>
+                                   <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%', justifyContent: 'center' }}>
+                                      {(activeData.dialogues || []).map((turn, dialIdx) => {
+                                         const lines = (turn.lines && turn.lines.length > 0)
+                                            ? turn.lines
+                                            : [{ sentence: turn.sentence || '', kor: turn.kor || '', hasBlank: turn.hasBlank || false }];
+
+                                         return (
+                                            <div key={dialIdx} data-turn-idx={dialIdx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', marginBottom: '18px' }}>
+                                               <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.8' }}>{String(turn.speaker || '')}:</div>
+                                               <div className="rp-turn-content" style={{ flex: 1, position: 'relative', paddingRight: '47px', minHeight: 40 }}>
+                                                  <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                                     {lines.map((line, lineIdx) => (
+                                                        <React.Fragment key={lineIdx}>
+                                                           <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: line.hasBlank ? renderBracketAsEmpPreview(line.sentence || "영어 대사", line.blankColor) : (line.sentence || "영어 대사") }} />{' '}
+                                                        </React.Fragment>
+                                                     ))}
+                                                  </div>
+                                                  {roleplayCKorFragments.filter(f => f.turnIdx === dialIdx).map(f => (
+                                                     <div key={f.key} style={{ position: 'absolute', left: f.left, top: f.top, maxWidth: f.maxWidth, fontSize: '15px', color: '#06c', fontWeight: 'bold', lineHeight: '1.8' }}>{f.text}</div>
+                                                  ))}
+                                               </div>
+                                            </div>
+                                         );
+                                      })}
+                                   </div>
+                                </div>
+
+                                {/* 💡 [C형] 해석 버튼 — 실제 마스터 CSS(.role-play-btn-translate-con)는 대사 박스
+                                    자신의 자식(DOM 중첩)이라, bottom/right가 박스 자신을 기준으로 계산된다.
+                                    C형은 저장 버튼이 없고(bottom-section 전체 숨김) 해석 버튼만 박스에 붙는다. */}
+                                <div style={{ position: 'absolute', bottom: -50, right: 0, padding: '15px 10px 10px', backgroundColor: '#f4f4f4', borderRadius: '0 0 30px 30px' }}>
+                                   <button style={{ height: 33, padding: '0 15px', backgroundColor: '#1f93a7', color: '#fff', border: 'none', borderRadius: '50px', fontWeight: 'bold', fontSize: '17px' }}>💬 해석</button>
+                                </div>
+                             </div>
+
+                             {/* 페이지(대화 갈래) 이동 — 마스터의 .role-play-script-page(좌우 화살표 + dots) 재현 */}
+                             <div style={{ position: 'absolute', left: 156, top: 626, width: 968, height: 31, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 5 }}>
+                                <button
+                                   onClick={() => setActiveViewIdx(Math.max(0, activeViewIdx - 1))}
+                                   disabled={activeViewIdx === 0}
+                                   style={{ width: 20, height: 31, border: 'none', background: 'transparent', cursor: activeViewIdx === 0 ? 'default' : 'pointer', opacity: activeViewIdx === 0 ? 0.3 : 1 }}
+                                   aria-label="이전 페이지"
+                                >◀</button>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 10px' }}>
+                                   {(pageData || []).map((page, idx) => (
+                                      <button
+                                         key={page.id}
+                                         onClick={() => setActiveViewIdx(idx)}
+                                         style={{ width: 21, height: 21, borderRadius: '50%', border: 'none', backgroundColor: idx === activeViewIdx ? '#f6570d' : '#e7ddd3', color: '#fff', fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}
+                                         aria-label={`${idx + 1}페이지로 이동`}
+                                      >{idx + 1}</button>
+                                   ))}
+                                </div>
+                                <button
+                                   onClick={() => setActiveViewIdx(Math.min((pageData || []).length - 1, activeViewIdx + 1))}
+                                   disabled={activeViewIdx === (pageData || []).length - 1}
+                                   style={{ width: 20, height: 31, border: 'none', background: 'transparent', cursor: activeViewIdx === (pageData || []).length - 1 ? 'default' : 'pointer', opacity: activeViewIdx === (pageData || []).length - 1 ? 0.3 : 1 }}
+                                   aria-label="다음 페이지"
+                                >▶</button>
+                             </div>
+                          </>
                         ) : (
                           /* 기존 롤플레이 A형 레이아웃 */
                           <>
@@ -2004,7 +2483,7 @@ export default function App() {
                                    })}
                                 </div>
                              </div>
- 
+
                              {/* Table Quiz */}
                              <div style={{ position: 'absolute', left: 710, top: 255, width: 530, height: 'auto', border: '1px solid #a0d0d9', borderRadius: '16px', backgroundColor: '#fff', overflow: 'hidden' }}>
                                 <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', textAlign: 'center' }}>
@@ -2051,14 +2530,18 @@ export default function App() {
                           </>
                         )}
  
-                        {/* 해석 버튼 */}
-                        <div style={{ position: 'absolute', bottom: -50, right: 0, padding: '15px 10px 10px', backgroundColor: '#f4f4f4', borderRadius: '0 0 30px 30px' }}>
-                           <button style={{ height: 33, padding: '0 15px', backgroundColor: '#1f93a7', color: '#fff', border: 'none', borderRadius: '50px', fontWeight: 'bold', fontSize: '17px' }}>💬 해석</button>
-                        </div>
- 
-                        <div style={{ position: 'absolute', bottom: 57, right: 40, display: 'flex', gap: '5px' }}>
-                           <button style={{ height: 40, padding: '0 15px', backgroundColor: '#7177e0', color: '#fff', border: 'none', borderRadius: '50px', fontSize: '18px', fontWeight: 'bold' }}>저장</button>
-                        </div>
+                        {/* 💡 [A/B형] 해석/저장 버튼 — 기존 그대로 유지(픽스 대상 아님) */}
+                        {contentType !== 'roleplay_c' && (
+                          <>
+                            <div style={{ position: 'absolute', bottom: -50, right: 0, padding: '15px 10px 10px', backgroundColor: '#f4f4f4', borderRadius: '0 0 30px 30px' }}>
+                               <button style={{ height: 33, padding: '0 15px', backgroundColor: '#1f93a7', color: '#fff', border: 'none', borderRadius: '50px', fontWeight: 'bold', fontSize: '17px' }}>💬 해석</button>
+                            </div>
+
+                            <div style={{ position: 'absolute', bottom: 57, right: 40, display: 'flex', gap: '5px' }}>
+                               <button style={{ height: 40, padding: '0 15px', backgroundColor: '#7177e0', color: '#fff', border: 'none', borderRadius: '50px', fontSize: '18px', fontWeight: 'bold' }}>저장</button>
+                            </div>
+                          </>
+                        )}
                      </div>
                   )}
  
@@ -2069,7 +2552,7 @@ export default function App() {
           {/* 우측 속성 제어 사이드바 */}
           <div className="w-[430px] bg-white flex flex-col h-full shadow-[-4px_0_15px_rgba(0,0,0,0.1)] border-l border-gray-200 z-40 shrink-0">
             <div className="p-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
-              <h2 className="text-lg font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay' ? '(Roleplay A)' : `(View ${activeData.view})`)}</span></h2>
+              <h2 className="text-lg font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${getDisplayTypeName(contentType, globalData.header.text)})` : `(View ${activeData.view})`}</span></h2>
             </div>
             
             <div className="flex border-b border-gray-200 shrink-0">
@@ -2293,7 +2776,7 @@ export default function App() {
                   )}
  
                   {/* 롤플레이 A형 - 대본 및 표 퀴즈 에디터 영역 */}
-                  {contentType === 'roleplay' && (
+                  {contentType === 'roleplay_a' && (
                      <>
                         <div className="border-b border-purple-200 pb-2 mb-3">
                            <h3 className="font-bold text-sm text-purple-800">📝 대화 스크립트 작성</h3>
@@ -2330,28 +2813,13 @@ export default function App() {
                                         </label>
                                      </div>
 
-                                     <div className="flex items-center justify-between mb-1">
-                                        <label className="block text-emerald-700 text-[11px] font-bold">영어 대사</label>
-                                        <div className="flex items-center gap-1">
-                                           <span className="text-[9px] text-gray-400 mr-0.5">강조: 텍스트 선택 후 클릭</span>
-                                           {EMP_COLORS.map(c => (
-                                              <button
-                                                 key={c.cls}
-                                                 type="button"
-                                                 onClick={() => applyEmpColorToSelection(dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`], line.sentence || '', c.cls, v => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', v))}
-                                                 className="w-4 h-4 rounded-full border border-white shadow ring-1 ring-gray-200 hover:ring-gray-400"
-                                                 style={{ backgroundColor: c.hex }}
-                                                 title={`${c.label} 강조로 감싸기`}
-                                              />
-                                           ))}
-                                        </div>
-                                     </div>
+                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">영어 대사</label>
                                      <textarea
                                         ref={el => { dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`] = el; }}
                                         value={line.sentence || ''}
                                         onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', e.target.value)}
                                         className={`w-full p-2 text-xs border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`}
-                                        placeholder="영어 대사 입력 (강조할 부분을 마우스로 선택한 뒤 위 색상 버튼을 누르세요)"
+                                        placeholder="영어 대사 입력"
                                      />
 
                                      {line.hasBlank && (
@@ -2463,7 +2931,130 @@ export default function App() {
                         </div>
                      </>
                   )}
- 
+
+                  {/* 💡 [C형 — A형 대본/표퀴즈 에디터를 그대로 복제] 병합 추출 레이아웃이 A형과 다르게
+                      확정되면 이 블록만 독립적으로 고쳐서 반영한다(A형 에디터는 그대로 유지). CRUD
+                      헬퍼 함수(handleSentenceChange 등)는 A형과 공유한다 — contentType 값만 다르게
+                      받아 그대로 재사용. */}
+                  {contentType === 'roleplay_c' && (
+                     <>
+                        <div className="border-b border-fuchsia-200 pb-2 mb-3">
+                           <h3 className="font-bold text-sm text-fuchsia-800">📝 대화 스크립트 작성 (C형 · 현재 페이지 {activeViewIdx + 1})</h3>
+                        </div>
+                        <ul className="text-[10px] leading-relaxed text-gray-400 -mt-2 mb-3 space-y-0.5 list-disc list-inside">
+                           <li>C형은 표 퀴즈 대신, 화면 하단 화살표/점(dots)으로 넘겨보는 여러 "페이지"(대화 갈래)로 구성됩니다. 페이지 전환·추가·삭제는 캔버스 상단 탭(Page 1, Page 2 ...)에서 합니다.</li>
+                           <li>실제 콘텐츠에서는 하단의 [저장] 버튼을 누르면 그 자리에서 [다시 하기] 버튼으로 바뀌어 나타납니다. 캔버스는 최초 진입 상태([저장]만 표시)만 보여줍니다.</li>
+                           <li>화면 하단 스크린리더용 안내문(hiddenText)은 "공통 설정" 탭의 지시문(instruction)을 그대로 재사용해 자동으로 만들어집니다. 지시문을 수정하면 함께 바뀝니다.</li>
+                        </ul>
+                        <div className="space-y-4">
+                           {(activeData.dialogues || []).map((turn, dialIdx) => {
+                              const lines = (turn.lines && turn.lines.length > 0) ? turn.lines : [{ sentence: turn.sentence || '', kor: turn.kor || '', audio_id: turn.audio_id || '', hasBlank: turn.hasBlank || false, muteTargets: turn.muteTargets }];
+                              return (
+                             <div key={dialIdx} className="p-3 border rounded-xl relative group shadow-sm bg-white border-fuchsia-200 space-y-3">
+                                <button onClick={() => removeSentence(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 턴(화자 전체) 삭제">✕</button>
+
+                                <div className="flex items-center gap-2">
+                                   <select value={turn.speaker || 'A'} onChange={e => handleSentenceChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-fuchsia-900 rounded bg-fuchsia-100 border border-fuchsia-300 outline-none cursor-pointer">
+                                      <option value="A">화자 A</option>
+                                      <option value="B">화자 B</option>
+                                   </select>
+                                   <span className="text-[10px] text-gray-400">이 턴 안에서 여러 줄(각각 별도 오디오)을 이어서 말하게 할 수 있습니다.</span>
+                                </div>
+
+                                {lines.map((line, lineIdx) => (
+                                  <div key={lineIdx} className={`p-2.5 border rounded-lg relative group/line ${line.hasBlank ? 'bg-indigo-50 border-indigo-200' : 'bg-gray-50 border-gray-200'}`}>
+                                     {lines.length > 1 && (
+                                        <button onClick={() => removeDialogueLine(dialIdx, lineIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover/line:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 줄만 삭제">✕</button>
+                                     )}
+                                     <div className="flex justify-between items-center mb-2">
+                                        <span className="text-[10px] font-bold text-gray-500">{lineIdx + 1}번째 줄</span>
+                                        <label className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 cursor-pointer bg-indigo-100 px-2 py-1 rounded">
+                                          <input type="checkbox" checked={line.hasBlank || false} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'hasBlank', e.target.checked)} className="cursor-pointer" />
+                                          빈칸(오디오 묵음) 지정
+                                        </label>
+                                     </div>
+
+                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">영어 대사</label>
+                                     <textarea
+                                        ref={el => { dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`] = el; }}
+                                        value={line.sentence || ''}
+                                        onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', e.target.value)}
+                                        className={`w-full p-2 text-xs border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`}
+                                        placeholder="영어 대사 입력"
+                                     />
+
+                                     {line.hasBlank && (
+                                        <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
+                                           <div className="flex items-center justify-between mb-1">
+                                              <label className="text-amber-800 text-[11px] font-bold">빈칸으로 지정할 구간 [ ]</label>
+                                              <button
+                                                 type="button"
+                                                 onClick={() => applyBracketToSelection(dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`], line.sentence || '', v => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', v))}
+                                                 className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded hover:bg-amber-200"
+                                              >
+                                                 위에서 선택한 부분 [ ]로 감싸기
+                                              </button>
+                                           </div>
+                                           <p className="text-[10px] leading-relaxed text-amber-700 mb-1.5">
+                                              위 "영어 대사"에서 정답(빈칸)이 될 부분을 마우스로 선택한 뒤 이 버튼을 누르면 <span className="font-mono">[ ]</span>로 감싸집니다.
+                                              마스터 템플릿이 이 대괄호 구간을 처음엔 안 보이게, 정답 확인 시엔 아래 색으로 강조해서 보여줍니다.
+                                           </p>
+                                           <div className="flex items-center gap-1 mb-2">
+                                              <span className="text-[10px] text-amber-700 mr-1">정답 강조색:</span>
+                                              {EMP_COLORS.map((c, colorIdx) => (
+                                                 <button
+                                                    key={c.cls}
+                                                    type="button"
+                                                    onClick={() => handleDialogueLineChange(dialIdx, lineIdx, 'blankColor', colorIdx)}
+                                                    className={`w-4 h-4 rounded-full shadow ring-2 ${(line.blankColor ?? 0) === colorIdx ? 'ring-gray-700' : 'ring-gray-200'}`}
+                                                    style={{ backgroundColor: c.hex }}
+                                                    title={c.label}
+                                                 />
+                                              ))}
+                                           </div>
+                                           <label className="block text-indigo-800 text-[11px] font-bold mb-1">
+                                              오디오 묵음 타겟 (muteTargets) <span className="text-indigo-500 font-normal ml-1">※ 싱크 인덱스 입력</span>
+                                           </label>
+                                           <input type="text" value={line.muteTargets !== undefined ? line.muteTargets : '0'} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'muteTargets', e.target.value)} className="w-full p-1.5 text-xs border border-indigo-300 rounded outline-none font-mono bg-white" placeholder="예: 0 또는 0, 1" />
+                                           <p className="mt-1.5 text-[10px] leading-relaxed text-indigo-700">
+                                              ⚠️ 별도 파일명을 지정하는 항목이 아닙니다. 마스터 템플릿은 아래 "오디오 ID"와 같은 이름에{' '}
+                                              <span className="font-mono font-bold">_묵음</span>만 붙인 파일을 자동으로 찾습니다.
+                                              {line.audio_id ? <> 예: <span className="font-mono font-bold">{line.audio_id}_묵음.mp3</span></> : ' 예: L1_012_CommB_eg_05_묵음.mp3'}
+                                              {' '}파일을 미디어 폴더에 함께 준비해 주세요.
+                                           </p>
+                                        </div>
+                                     )}
+
+                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">한글 해석 (kor)</label>
+                                     <textarea value={line.kor || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력" />
+
+                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">오디오 ID</label>
+                                     <input type="text" value={line.audio_id || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L1_012_CommB_eg_05" />
+                                  </div>
+                                ))}
+
+                                <button onClick={() => addDialogueLine(dialIdx)} className="w-full py-1.5 border border-dashed border-indigo-300 text-indigo-600 text-[11px] font-bold rounded-lg hover:bg-indigo-50 transition">+ 같은 화자로 줄 추가 (오디오 분리)</button>
+                             </div>
+                              );
+                           })}
+                           <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-fuchsia-300 text-fuchsia-600 text-xs font-bold rounded-xl hover:bg-fuchsia-100 transition">+ 새로운 턴(화자 차례) 추가</button>
+                        </div>
+
+                        {/* 💡 페이지(대화 갈래) 관리 — B형 씬 관리 패턴과 동일하게, 현재 페이지 삭제는
+                            여기서도 가능하게 해서 캔버스 상단 탭까지 안 가도 되게 한다. */}
+                        <div className="border-t border-dashed border-gray-300 pt-4 mt-6 flex items-center justify-between">
+                           <span className="text-[11px] text-gray-500">현재 페이지({activeViewIdx + 1}/{(pageData || []).length})를 삭제하려면:</span>
+                           <button
+                              onClick={() => deletePageC(activeViewIdx)}
+                              disabled={(pageData || []).length <= 1}
+                              className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                           >
+                              이 페이지 삭제
+                           </button>
+                        </div>
+                     </>
+                  )}
+
                 </div>
               ) : (
                 <div className="animate-fade-in space-y-6">
