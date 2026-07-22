@@ -55,6 +55,29 @@ function getDisplayTypeName(contentType, title) {
   return String(title || '');
 }
 
+// 💡 [유형 변경 전용] 구조 유형(A/B/C) × 서사 변형(Look/Think)을 조합한 5가지 고정 후보.
+// A는 서사 변형 개념이 없어 1개뿐이고, B/C는 각각 Look/Think 2개씩 — 총 5개 중 "지금 화면에
+// 표시된 이름"과 정확히 일치하는 1개만 빼고 나머지 4개를 후보로 보여준다. 원본 이미지 제목과는
+// 완전히 무관한 고정 목록이다(사용자 확정 결정 — 구조/서사 조합은 사용자가 직접 고른다).
+const TYPE_CHANGE_OPTIONS = [
+  { type: 'roleplay_a', variant: null, label: 'Talk and Complete' },
+  { type: 'roleplay_b', variant: 'look', label: 'Look and Talk - 1' },
+  { type: 'roleplay_b', variant: 'think', label: 'Think and Talk - 1' },
+  { type: 'roleplay_c', variant: 'look', label: 'Look and Talk - 2' },
+  { type: 'roleplay_c', variant: 'think', label: 'Think and Talk - 2' },
+];
+
+// 💡 [유형 변경 후보 미리보기 전용] 위 5가지 후보와 짝을 맞춰 Look/Think 변형 이미지를 고른다.
+// roleplay_a는 애초에 Look/Think 변형 이미지가 없어서(TYPE_PREVIEW_IMAGES.roleplay_a엔
+// default 하나뿐) variant가 null일 때 항상 default를 쓴다.
+function getTypeChangeCandidatePreviewSrc(option) {
+  const bucket = TYPE_PREVIEW_IMAGES[option.type];
+  if (!bucket) return null;
+  if (option.variant === 'think') return bucket.thinkAndTalk || bucket.default || null;
+  if (option.variant === 'look') return bucket.lookAndTalk || bucket.default || null;
+  return bucket.default || null;
+}
+
 // --- [IndexedDB 템플릿 저장 로직] ---
 const DB_NAME = 'ContentBuilderDB_V6';
 const STORE_NAME = 'templates';
@@ -377,7 +400,18 @@ export default function App() {
   const [uploadedImage, setUploadedImage] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [contentType, setContentType] = useState('understand');
-  const [showTypePreview, setShowTypePreview] = useState(false);
+  // 💡 [유형 미리보기 라이트박스] 어떤 유형의 완성 화면 예시를 보여줄지 — null이면 팝업 닫힘.
+  // 기존엔 boolean(showTypePreview)이라 항상 "현재 contentType"만 보여줬는데, 유형 변경
+  // 드롭다운에서 "아직 선택 전인 후보 유형"도 미리보기할 수 있어야 해서 값 자체를 들고 있게 바꿈.
+  const [typePreviewTarget, setTypePreviewTarget] = useState(null);
+  // 💡 [유형 변경] 1단계에서 AI 판정 유형(roleplay_a/b/c 사이만)을 수동으로 정정하는 기능.
+  // showTypeChangeMenu는 후보 목록 드롭다운 노출 여부, typeChangeTarget은 사용자가 후보를
+  // 고른 뒤 확인 팝업에 띄울 "다음 유형" 값(확인 전까지는 실제로 반영 안 됨, null이면 팝업 닫힘).
+  const [showTypeChangeMenu, setShowTypeChangeMenu] = useState(false);
+  // 💡 typeChangeTarget은 이제 유형 문자열이 아니라 TYPE_CHANGE_OPTIONS의 항목 객체
+  // ({ type, variant, label })를 그대로 들고 있는다 — 구조(A/B/C)뿐 아니라 서사 변형
+  // (Look/Think)까지 후보 하나에 같이 담겨있기 때문.
+  const [typeChangeTarget, setTypeChangeTarget] = useState(null);
 
   const [croppedViews, setCroppedViews] = useState([]);
   const [extractedDialogues, setExtractedDialogues] = useState([]);
@@ -882,7 +916,152 @@ export default function App() {
       return next;
     });
   };
- 
+
+  // 💡 [유형 변경 — 롤플레이 A/B/C 상호 전환 전용] 2단계(startEditing) 진입 전, 1단계에서
+  // AI가 오판정한 유형을 사용자가 손으로 정정할 때 쓰는 변환 유틸. understand는 대상이 아님(문서
+  // docs/roleplay_type_change_button_prompt.md 참고 — 오판정이 사실상 A/B/C 사이에서만 발생).
+  //
+  // 세 유형이 대사 하나를 담는 "그릇 모양"이 달라서(B=flat {speaker,sentence,kor,audio_id},
+  // A/C=중첩 {speaker,lines:[{sentence,kor,audio_id,hasBlank,muteTargets}]}), 그릇만 바꿔주는
+  // 두 변환 함수가 필요하다. 내용(문장 자체)은 그대로 두고 담는 모양만 바꾸는 것뿐이라
+  // "평탄화/포장"이라고 부른다.
+  const linesTurnToFlat = (turn) => {
+    const firstLine = (turn.lines && turn.lines[0]) || {};
+    return {
+      speaker: turn.speaker || 'A',
+      sentence: firstLine.sentence || turn.sentence || '',
+      kor: firstLine.kor || turn.kor || '',
+      audio_id: firstLine.audio_id || turn.audio_id || '',
+      hasBlank: firstLine.hasBlank || false,
+      muteTargets: firstLine.muteTargets !== undefined ? firstLine.muteTargets : '0'
+    };
+  };
+  const flatItemToLinesTurn = (item) => ({
+    speaker: item.speaker || 'A',
+    lines: [{
+      sentence: item.sentence || '',
+      kor: item.kor || '',
+      audio_id: item.audio_id || '',
+      hasBlank: item.hasBlank || false,
+      muteTargets: item.muteTargets !== undefined ? item.muteTargets : '0'
+    }]
+  });
+
+  // 💡 [유형 변경 전용] label(예: "Look and Talk - 2")에서 저작 도구 전용 구분 접미사("- 1"/
+  // "- 2")를 떼어내 실제 헤더 텍스트로 쓸 순수 문구("Look and Talk")를 만든다. 이 접미사는
+  // B/C형이 같은 "Look and Talk" 이름을 공유할 때 저작 도구 안에서만 구분하려고 붙인 것이지,
+  // 실제 교과서 제목에 있는 표현이 아니므로 실제 콘텐츠에 내보낼 때는 빼야 한다.
+  const stripTypeChangeSuffix = (label) => label.replace(/\s*-\s*\d+$/, '').trim();
+
+  // 💡 유형 변경 확인 팝업에 띄울 경고 문구를 미리 계산한다. 실제 데이터를 건드리지 않고
+  // "지금 상태로 넘어가면 무엇이 사라지는지/바뀌는지"만 미리 훑어보는 순수 판별 함수.
+  // option은 TYPE_CHANGE_OPTIONS의 항목({ type, variant, label }).
+  const getTypeChangeWarnings = (oldType, option) => {
+    const newType = option.type;
+    const warnings = [];
+    const sourceSceneCount = extractedScenesB.length;
+    const sourcePageCount = extractedPagesC.length;
+
+    // 유형 변경은 실제 헤더 텍스트(ZIP에 들어가는 진짜 제목 자산)도 새 유형명으로 함께
+    // 바꾼다(사용자 확정 결정) — 저작 도구 UI와 실제 배포되는 콘텐츠의 유형 표시가 다르면
+    // "이 유형이 원래 어떤 레이아웃이었더라" 헷갈릴 수 있어서다.
+    const newHeaderText = stripTypeChangeSuffix(option.label);
+    if (newHeaderText.toLowerCase() !== String(globalData.header.text || '').toLowerCase()) {
+      warnings.push(`헤더 텍스트가 "${globalData.header.text}" → "${newHeaderText}"로 함께 변경됩니다.`);
+    }
+
+    // A형은 다중 씬/페이지 개념이 없어서, 여러 개 중 첫 번째만 남고 나머지는 사라진다.
+    if (newType === 'roleplay_a') {
+      if (sourceSceneCount > 1) warnings.push(`2번째 이후 씬(총 ${sourceSceneCount}개 중 1개만 유지)은 사라집니다.`);
+      if (sourcePageCount > 1) warnings.push(`2번째 이후 페이지(총 ${sourcePageCount}개 중 1개만 유지)는 사라집니다.`);
+    }
+
+    // A형에만 있는 표 퀴즈는 B/C로 바꾸면 사라진다.
+    if (oldType === 'roleplay_a' && (newType === 'roleplay_b' || newType === 'roleplay_c') && extractedTableQuiz) {
+      warnings.push('표 퀴즈 데이터는 B/C형에 없어 사라집니다.');
+    }
+
+    // 빈칸(오디오 묵음) 표시는 B형 데이터 구조에 없는 필드라 B로 바꾸면 사라진다.
+    if (newType === 'roleplay_b') {
+      const anyHasBlank = extractedDialogues.some(d => d.hasBlank)
+        || extractedPagesC.some(p => (p.dialogues || []).some(t => (t.lines || []).some(l => l.hasBlank)));
+      if (anyHasBlank) warnings.push('빈칸(오디오 묵음) 설정은 B형에 없어 사라집니다.');
+    }
+
+    // B형에만 있는 씬 이미지는 A/C로 바꾸면 사라진다.
+    if (oldType === 'roleplay_b' && (newType === 'roleplay_a' || newType === 'roleplay_c')) {
+      const hasImage = extractedScenesB.some(s => s.src);
+      if (hasImage) warnings.push('업로드했던 씬 이미지는 A/C형에 없어 사라집니다.');
+    }
+
+    return warnings;
+  };
+
+  // 💡 [유형 변경 전용] 화면에 보여줄 "지금 이름". 유형을 바꿀 때 실제 헤더 텍스트도 함께
+  // 바꾸므로(아래 applyTypeChange 참고), 이제는 별도의 "선택 기억" 상태 없이 원래 있던
+  // getDisplayTypeName(contentType, 실제 헤더 텍스트) 그대로 계산해도 항상 정확하다.
+  const resolveTypeDisplayName = () => getDisplayTypeName(contentType, globalData.header.text);
+
+  // 💡 실제 반영: contentType과 세 추출 상태(extractedDialogues/extractedScenesB/extractedPagesC)를
+  // newType 기준으로 다시 짜맞춘다. 각 유형의 "폴백 규칙"(단일 flat이면 extractedDialogues만
+  // 채우기)은 startEditing()이 이미 알아서 소비하므로, 여기서는 "그릇 모양"만 맞춰주면 된다.
+  // option은 TYPE_CHANGE_OPTIONS의 항목({ type, variant, label }) — 구조(type)가 실제로 바뀔 때만
+  // 씬/페이지 데이터를 다시 짜맞추고, 서사 변형(label)만 바뀌는 경우(예: 같은 B형 안에서
+  // Look↔Think)는 데이터는 그대로 두고 헤더 텍스트만 새 이름으로 갱신한다.
+  const applyTypeChange = (option) => {
+    const oldType = contentType;
+    const newType = option.type;
+
+    if (newType !== oldType) {
+    const scenesSrc = extractedScenesB.length > 0 ? extractedScenesB : null;
+    const pagesSrc = extractedPagesC.length > 0 ? extractedPagesC : null;
+
+    if (newType === 'roleplay_b') {
+      if (pagesSrc) {
+        // C(페이지 여러 개) → B(씬 여러 개): 인덱스를 그대로 짝지어 몽땅 옮긴다(내용 손실 없음).
+        setExtractedScenesB(pagesSrc.map(page => ({ src: '', dialogues: (page.dialogues || []).map(linesTurnToFlat) })));
+        setExtractedDialogues([]);
+      } else {
+        // A 또는 단일형 C → B: 이미 extractedDialogues(flat)에 있으므로 그대로 두면 B의
+        // startEditing 폴백이 자동으로 모든 씬에 복제해 채운다(2-32 관례).
+        setExtractedScenesB([]);
+      }
+      setExtractedPagesC([]);
+    } else if (newType === 'roleplay_c') {
+      if (scenesSrc) {
+        // B(씬 여러 개) → C(페이지 여러 개): 인덱스를 그대로 짝지어 몽땅 옮긴다(내용 손실 없음).
+        setExtractedPagesC(scenesSrc.map(scene => ({ dialogues: (scene.dialogues || []).map(flatItemToLinesTurn) })));
+        setExtractedDialogues([]);
+      } else {
+        // A 또는 단일형 B → C: 이미 extractedDialogues(flat)에 있으므로 그대로 두면 C의
+        // startEditing 폴백이 1번 페이지로 쓰고 2번 페이지는 복제해서 채운다.
+        setExtractedPagesC([]);
+      }
+      setExtractedScenesB([]);
+    } else if (newType === 'roleplay_a') {
+      // A는 항상 단일 대화 목록만 가지므로, 여러 개 중 "첫 번째"만 골라 flat으로 평탄화한다.
+      if (scenesSrc) {
+        setExtractedDialogues(scenesSrc[0].dialogues.map(item => ({ ...item })));
+      } else if (pagesSrc) {
+        setExtractedDialogues(pagesSrc[0].dialogues.map(linesTurnToFlat));
+      }
+      // 그 외(이미 flatSrc만 있는 경우)는 extractedDialogues가 이미 A가 원하는 모양 그대로라 손댈 것 없음.
+      setExtractedScenesB([]);
+      setExtractedPagesC([]);
+    }
+
+    setContentType(newType);
+    setActiveViewIdx(0);
+    }
+
+    // 💡 실제 헤더 텍스트(ZIP에 들어가는 진짜 제목 자산)도 새 유형명으로 함께 바꾼다(사용자
+    // 확정 결정) — 저작 도구 UI와 실제 배포되는 콘텐츠의 유형 표시가 어긋나지 않게 하기 위함.
+    // 접미사("- 1"/"- 2")는 저작 도구 안에서만 쓰는 구분용이라 실제 텍스트에는 뺀다.
+    setGlobalData(prev => ({ ...prev, header: { ...prev.header, text: stripTypeChangeSuffix(option.label) } }));
+    setTypeChangeTarget(null);
+    showToast(`✅ 유형을 '${option.label}'(으)로 변경했습니다.`);
+  };
+
   // 💡 [Vercel 배포 대비] 서버리스 함수의 요청 본문 크기 제한(4.5MB)에 걸리지 않도록,
   // 업로드된 이미지를 전송 전에 canvas로 리사이즈·압축합니다. 긴 변 기준 1600px로 축소하고
   // JPEG 82% 품질로 저장하면, 웬만한 교과서 사진은 1~2MB 안팎으로 줄어듭니다.
@@ -1979,61 +2158,99 @@ export default function App() {
       {/* 1단계: 교과서 투입 및 AI 레이아웃 자동 판별 */}
       {!isAdminMode && currentPage === 1 && (
         <div className="flex-1 overflow-y-auto p-8 flex justify-center items-center bg-gray-50">
-          <div className="bg-white border border-gray-200 p-8 rounded-2xl shadow-xl max-w-4xl w-full">
-            <h2 className="text-2xl font-bold mb-1">📖 1단계: 종이 교과서 이미지 투입 및 판별</h2>
-            <p className="text-gray-500 text-sm mb-6">사용자가 생성하고 싶은 종이 교과서 PDF 및 이미지를 업로드하세요. AI Vision 분석 파이프라인이 텍스트, 말풍선 좌표 및 레이아웃을 자동 분할하여 최적의 인터랙티브 콘텐츠 템플릿을 추천합니다.</p>
- 
-            <div className="grid grid-cols-2 gap-8">
+          <div className="bg-white border border-gray-200 p-14 rounded-2xl shadow-xl max-w-[1700px] w-full">
+            <h2 className="text-4xl font-bold mb-2">📖 1단계: 종이 교과서 이미지 투입 및 판별</h2>
+            <p className="text-gray-500 text-lg mb-10">사용자가 생성하고 싶은 종이 교과서 PDF 및 이미지를 업로드하세요. AI Vision 분석 파이프라인이 텍스트, 말풍선 좌표 및 레이아웃을 자동 분할하여 최적의 인터랙티브 콘텐츠 템플릿을 추천합니다.</p>
+
+            <div className="grid grid-cols-2 gap-14">
               {/* 왼쪽 투입 */}
-              <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 bg-gray-50 flex flex-col justify-center items-center text-center hover:bg-emerald-50 transition">
-                <span className="text-4xl mb-4">📥</span>
-                <p className="font-bold text-sm mb-2 text-gray-700">교과서 파일 업로드</p>
-                <p className="text-xs text-gray-500 mb-6">PDF / PNG / JPG 등 1280x720 규격 이미지</p>
-                
+              <div className="border-2 border-dashed border-gray-300 rounded-xl p-14 bg-gray-50 flex flex-col justify-center items-center text-center hover:bg-emerald-50 transition">
+                <span className="text-7xl mb-6">📥</span>
+                <p className="font-bold text-xl mb-3 text-gray-700">교과서 파일 업로드</p>
+                <p className="text-base text-gray-500 mb-8">PDF / PNG / JPG 등 1280x720 규격 이미지</p>
+
                 <div className="space-y-2 w-full">
-                  <input type="file" accept="image/*" onChange={handleImageUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 mx-auto cursor-pointer" />
+                  <input type="file" accept="image/*" onChange={handleImageUpload} className="block w-full text-base text-gray-500 file:mr-4 file:py-3 file:px-6 file:rounded file:border-0 file:font-semibold file:text-base file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 mx-auto cursor-pointer" />
                 </div>
               </div>
- 
+
               {/* 오른쪽 결과 */}
-              <div className="bg-white border border-gray-200 rounded-xl p-6 flex flex-col justify-between min-h-[300px] shadow-sm">
+              <div className="bg-white border border-gray-200 rounded-xl p-10 flex flex-col justify-between min-h-[500px] shadow-sm">
                 {isAnalyzing ? (
                   <div className="flex-1 flex flex-col items-center justify-center">
-                    <div className="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-                    <p className="text-sm font-bold text-emerald-600 animate-pulse">Claude AI 분석 중...</p>
+                    <div className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-6"></div>
+                    <p className="text-lg font-bold text-emerald-600 animate-pulse">Claude AI 분석 중...</p>
                   </div>
                 ) : uploadedImage ? (
                   <div className="flex-1 flex flex-col justify-between animate-fade-in">
                     <div>
-                      <h3 className="text-sm font-bold text-gray-700 mb-3">📊 AI 자동 추천 분석 스펙</h3>
-                      <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg space-y-2 mb-4">
-                        <div className="flex justify-between items-center text-xs border-b border-gray-200 pb-2">
+                      <h3 className="text-lg font-bold text-gray-700 mb-4">📊 AI 자동 추천 분석 스펙</h3>
+                      <div className="bg-gray-50 border border-gray-200 p-6 rounded-lg space-y-3 mb-6">
+                        <div className="flex justify-between items-center text-base border-b border-gray-200 pb-3">
                           <span className="text-gray-500">콘텐츠 타입</span>
-                          <span className="flex items-center gap-1.5">
-                            <span className="font-bold text-teal-600 uppercase">{getDisplayTypeName(contentType, globalData.header.text)}</span>
+                          <span className="flex items-center gap-2.5">
+                            <span className="font-bold text-teal-600 uppercase text-lg">{resolveTypeDisplayName()}</span>
                             <button
                               type="button"
-                              onClick={() => setShowTypePreview(true)}
-                              className="text-[10px] font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded px-1.5 py-0.5 transition"
+                              onClick={() => setTypePreviewTarget({ type: contentType, variant: null, label: resolveTypeDisplayName(), isCurrent: true })}
+                              className="text-sm font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg px-3 py-1.5 transition"
                               title="이 유형의 완성 화면 예시 보기"
                             >
-                              👁 미리보기
+                              🔍 미리보기
                             </button>
-                            {/* TODO: 유형 변경 버튼 자리 — 유형 간 데이터 매핑 정의 후 추가 예정 */}
+                            {/* 💡 [유형 변경] understand는 대상 아님(A/B/C 사이 오판정만 실제 발생, 문서 참고).
+                                후보는 구조(A/B/C) × 서사(Look/Think) 5가지 조합 중 "지금 표시된 이름"과
+                                일치하는 1개만 빼고 나머지 4개(TYPE_CHANGE_OPTIONS 참고, 원본 제목과 무관한
+                                고정 목록 — 사용자 확정 결정). */}
+                            {(contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') && (
+                              <div className="relative">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowTypeChangeMenu(v => !v)}
+                                  className="text-sm font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg px-3 py-1.5 transition"
+                                  title="AI가 오판정했다면 유형을 수동으로 정정할 수 있습니다"
+                                >
+                                  🔄 유형 변경
+                                </button>
+                                {showTypeChangeMenu && (
+                                  <div className="absolute z-10 top-full right-0 mt-2 bg-white border border-gray-200 rounded-lg shadow-lg py-2 w-80">
+                                    {TYPE_CHANGE_OPTIONS.filter(opt => opt.label !== resolveTypeDisplayName()).map(opt => (
+                                      <div key={opt.label} className="flex items-center justify-between px-1 hover:bg-indigo-50 rounded">
+                                        <button
+                                          type="button"
+                                          onClick={() => { setShowTypeChangeMenu(false); setTypeChangeTarget(opt); }}
+                                          className="flex-1 text-left px-4 py-3 text-base text-gray-700"
+                                        >
+                                          {opt.label}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); setTypePreviewTarget({ ...opt, isCurrent: false }); }}
+                                          className="text-base text-teal-700 px-3 py-3 shrink-0"
+                                          title={`${opt.label} 완성 화면 예시 보기`}
+                                        >
+                                          🔍
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </span>
                         </div>
-                        <div className="flex justify-between text-xs border-b border-gray-200 pb-2"><span className="text-gray-500">헤더 발문 자산</span><span className="font-bold text-gray-800">{globalData.header.letter} - {globalData.header.text}</span></div>
-                        <div className="flex justify-between text-xs border-b border-gray-200 pb-2"><span className="text-gray-500">지시문 내용</span><span className="font-bold text-gray-800 max-w-[200px] truncate">{globalData.header.instruction}</span></div>
-                        <div className="flex justify-between text-xs"><span className="text-gray-500">정렬 뷰 개수</span><span className="font-bold text-indigo-600">{contentType === 'understand' ? croppedViews.length : '1 Scene (동적 멀티전환)'}</span></div>
+                        <div className="flex justify-between text-base border-b border-gray-200 pb-3"><span className="text-gray-500">헤더 발문 자산</span><span className="font-bold text-gray-800">{globalData.header.letter} - {globalData.header.text}</span></div>
+                        <div className="flex justify-between text-base border-b border-gray-200 pb-3"><span className="text-gray-500">지시문 내용</span><span className="font-bold text-gray-800 max-w-[360px] truncate">{globalData.header.instruction}</span></div>
+                        <div className="flex justify-between text-base"><span className="text-gray-500">정렬 뷰 개수</span><span className="font-bold text-indigo-600">{contentType === 'understand' ? croppedViews.length : '1 Scene (동적 멀티전환)'}</span></div>
                       </div>
                     </div>
- 
-                    <button onClick={startEditing} className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg shadow-md text-sm transition">
+
+                    <button onClick={startEditing} className="w-full py-5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg shadow-md text-lg transition">
                       2단계 저작자 캔버스 진입 🚀
                     </button>
                   </div>
                 ) : (
-                  <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
+                  <div className="flex-1 flex items-center justify-center text-gray-500 text-base">
                     왼쪽 패널에서 종이 교과서 이미지를 업로드해 주세요.
                   </div>
                 )}
@@ -2043,35 +2260,89 @@ export default function App() {
         </div>
       )}
 
-      {/* 💡 [1단계] 유형 미리보기 라이트박스 — 판정된 contentType의 완성 화면 대표 예시를 보여줌 */}
-      {showTypePreview && (
+      {/* 💡 [1단계] 유형 미리보기 라이트박스 — "🔍 미리보기"(현재 판정된 유형)와 유형 변경
+          드롭다운의 항목별 "🔍"(아직 선택 전인 후보 유형) 양쪽에서 공용으로 쓴다. typePreviewTarget은
+          { type, variant, label, isCurrent } 객체이고 null이면 팝업 닫힘. isCurrent가 true면(현재
+          실제 판정된 유형) 진짜 원본 제목 기반 이미지(getPreviewImageSrc)를, false면(아직 선택
+          전인 후보) 원본 제목과 무관한 고정 이미지(getTypeChangeCandidatePreviewSrc)를 쓴다 —
+          라벨(label)은 두 경우 다 이미 계산되어 객체에 들어있으므로 그대로 쓰면 된다. */}
+      {typePreviewTarget && (
         <div
           className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-6"
-          onClick={() => setShowTypePreview(false)}
+          onClick={() => setTypePreviewTarget(null)}
         >
           <div
-            className="bg-white rounded-xl shadow-2xl max-w-xl w-full max-h-[80vh] flex flex-col overflow-hidden"
+            className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex justify-between items-center px-4 py-3 border-b border-gray-200 shrink-0">
-              <h3 className="text-sm font-bold text-gray-800">
-                {getDisplayTypeName(contentType, globalData.header.text)} 완성 예시
+            <div className="flex justify-between items-center px-6 py-4 border-b border-gray-200 shrink-0">
+              <h3 className="text-lg font-bold text-gray-800">
+                {typePreviewTarget.label} 완성 예시
               </h3>
               <button
                 type="button"
-                onClick={() => setShowTypePreview(false)}
-                className="text-gray-400 hover:text-gray-700 text-lg leading-none"
+                onClick={() => setTypePreviewTarget(null)}
+                className="text-gray-400 hover:text-gray-700 text-2xl leading-none px-2"
                 aria-label="닫기"
               >
                 ✕
               </button>
             </div>
-            <div className="p-4 overflow-auto">
-              {getPreviewImageSrc(contentType, globalData.header.text) ? (
-                <img src={getPreviewImageSrc(contentType, globalData.header.text)} alt={`${contentType} 완성 화면 예시`} className="w-full h-auto rounded-lg border border-gray-200" />
+            <div className="p-6 overflow-auto">
+              {(typePreviewTarget.isCurrent
+                ? getPreviewImageSrc(typePreviewTarget.type, globalData.header.text)
+                : getTypeChangeCandidatePreviewSrc(typePreviewTarget)) ? (
+                <img
+                  src={typePreviewTarget.isCurrent ? getPreviewImageSrc(typePreviewTarget.type, globalData.header.text) : getTypeChangeCandidatePreviewSrc(typePreviewTarget)}
+                  alt={`${typePreviewTarget.label} 완성 화면 예시`}
+                  className="w-full h-auto rounded-lg border border-gray-200"
+                />
               ) : (
                 <div className="py-16 text-center text-sm text-gray-400">이 유형의 예시 이미지는 아직 준비 중입니다.</div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 💡 [1단계] 유형 변경 확인 팝업 — "n유형에서 m유형으로 변경할까요?" 기본 질문에,
+          이 전환에서만 해당하는 손실 경고(getTypeChangeWarnings)를 조건부로 덧붙인다. */}
+      {typeChangeTarget && (
+        <div
+          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-6"
+          onClick={() => setTypeChangeTarget(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 pt-6 pb-5">
+              <h3 className="text-base font-bold text-gray-800 mb-4">
+                {resolveTypeDisplayName()}에서 {typeChangeTarget.label}(으)로 변경할까요?
+              </h3>
+              {getTypeChangeWarnings(contentType, typeChangeTarget).length > 0 && (
+                <ul className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-1.5">
+                  {getTypeChangeWarnings(contentType, typeChangeTarget).map((w, i) => (
+                    <li key={i} className="text-sm text-amber-700">⚠️ {w}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="flex border-t border-gray-200">
+              <button
+                type="button"
+                onClick={() => setTypeChangeTarget(null)}
+                className="flex-1 py-4 text-base font-bold text-gray-500 hover:bg-gray-50 transition"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={() => applyTypeChange(typeChangeTarget)}
+                className="flex-1 py-4 text-base font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition"
+              >
+                변경하기
+              </button>
             </div>
           </div>
         </div>
@@ -2088,7 +2359,7 @@ export default function App() {
                     <button key={data.id} onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>View {String(data.view || '')}</button>
                   ))}
                   {contentType === 'roleplay_a' && (
-                    <button className="px-5 py-1.5 text-sm font-bold rounded-full bg-purple-600 text-white shadow-md whitespace-nowrap">{getDisplayTypeName(contentType, globalData.header.text)}</button>
+                    <button className="px-5 py-1.5 text-sm font-bold rounded-full bg-purple-600 text-white shadow-md whitespace-nowrap">{resolveTypeDisplayName()}</button>
                   )}
                   {contentType === 'roleplay_c' && (
                     <>
@@ -2552,7 +2823,7 @@ export default function App() {
           {/* 우측 속성 제어 사이드바 */}
           <div className="w-[430px] bg-white flex flex-col h-full shadow-[-4px_0_15px_rgba(0,0,0,0.1)] border-l border-gray-200 z-40 shrink-0">
             <div className="p-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
-              <h2 className="text-lg font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${getDisplayTypeName(contentType, globalData.header.text)})` : `(View ${activeData.view})`}</span></h2>
+              <h2 className="text-lg font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${resolveTypeDisplayName()})` : `(View ${activeData.view})`}</span></h2>
             </div>
             
             <div className="flex border-b border-gray-200 shrink-0">
