@@ -154,12 +154,19 @@ async function deleteTemplateDB(type) {
 }
  
 // 💡 [동결] 언더스탠드 기본 템플릿 모형
+// 💡 [수정] 각 컷의 기본 프리셋을 말풍선 배열(bubbles)로 변경 — 컷당 말풍선 1개가 기본값이지만,
+// AI가 여러 개를 인식하거나 사용자가 "+ 말풍선 추가"를 누르면 이 배열에 항목이 늘어난다.
 const TEMPLATE_UNDERSTAND = [
-  { view: "01", bubble: { width: 510, x: 190, y: 140, tail_dir: "bottom", tail_pos: 40, tail_tip: "right", bg_color: "#FFE5ED", border_color: "#E3C1CB" }, text: { type: "inline", eng: [{ sentence: "Hi, I'm Lisa.", kor: "안녕하세요, 저는 Lisa입니다.", audio_id: "L2_039_Bridge_A_1" }, { sentence: "I live in the Netherlands.", kor: "저는 네덜란드에 살아요.", audio_id: "L2_039_Bridge_A_2" }] } },
-  { view: "02", bubble: { width: 433, x: 250, y: 120, tail_dir: "bottom", tail_pos: 55, tail_tip: "right", bg_color: "#FFFFFF", border_color: "#CCD0D6" }, text: { type: "lines", eng: [{ lines: [{ en: "I stay healthy because I", ko: "저는 항상 자전거를 타고 학교에 가기 때문에" }, { en: "always ride a bike to school.", ko: "건강하게 지내요." }], audio_id: "L2_039_Bridge_A_3" }] } },
-  { view: "03", bubble: { width: 470, x: 268, y: 125, tail_dir: "bottom", tail_pos: 95, tail_tip: "right", bg_color: "#FFFFFF", border_color: "#CCD0D6" }, text: { type: "zipper", eng: [{ sentence: "Hi, I'm Julian from Greece.<br>", kor: "안녕하세요, 저는 그리스에 사는 Julian입니다.<br>", audio_id: "L2_039_Bridge_A_4" }, { sentence: "I'm 90 years old, and I'm healthy.", kor: "저는 90세이고, 건강합니다.", audio_id: "L2_039_Bridge_A_5" }] } },
-  { view: "04", bubble: { width: 590, x: 190, y: 150, tail_dir: "bottom", tail_pos: 95, tail_tip: "right", bg_color: "#FFFAE2", border_color: "#C6BDA7" }, text: { type: "inline", eng: [{ sentence: "I eat healthy food with olive oil every day.", kor: "저는 올리브 오일을 곁들인 건강에 좋은 음식을 매일 먹습니다.", audio_id: "L2_039_Bridge_A_6" }] } }
+  { view: "01", bubbles: [{ bubble: { width: 510, x: 190, y: 140, tail_dir: "bottom", tail_pos: 40, tail_tip: "right", bg_color: "#FFE5ED", border_color: "#E3C1CB" }, text: { type: "inline", eng: [{ sentence: "Hi, I'm Lisa.", kor: "안녕하세요, 저는 Lisa입니다.", audio_id: "L2_039_Bridge_A_1" }, { sentence: "I live in the Netherlands.", kor: "저는 네덜란드에 살아요.", audio_id: "L2_039_Bridge_A_2" }] } }] },
+  { view: "02", bubbles: [{ bubble: { width: 433, x: 250, y: 120, tail_dir: "bottom", tail_pos: 55, tail_tip: "right", bg_color: "#FFFFFF", border_color: "#CCD0D6" }, text: { type: "lines", eng: [{ lines: [{ en: "I stay healthy because I", ko: "저는 항상 자전거를 타고 학교에 가기 때문에" }, { en: "always ride a bike to school.", ko: "건강하게 지내요." }], audio_id: "L2_039_Bridge_A_3" }] } }] },
+  { view: "03", bubbles: [{ bubble: { width: 470, x: 268, y: 125, tail_dir: "bottom", tail_pos: 95, tail_tip: "right", bg_color: "#FFFFFF", border_color: "#CCD0D6" }, text: { type: "zipper", eng: [{ sentence: "Hi, I'm Julian from Greece.<br>", kor: "안녕하세요, 저는 그리스에 사는 Julian입니다.<br>", audio_id: "L2_039_Bridge_A_4" }, { sentence: "I'm 90 years old, and I'm healthy.", kor: "저는 90세이고, 건강합니다.", audio_id: "L2_039_Bridge_A_5" }] } }] },
+  { view: "04", bubbles: [{ bubble: { width: 590, x: 190, y: 150, tail_dir: "bottom", tail_pos: 95, tail_tip: "right", bg_color: "#FFFAE2", border_color: "#C6BDA7" }, text: { type: "inline", eng: [{ sentence: "I eat healthy food with olive oil every day.", kor: "저는 올리브 오일을 곁들인 건강에 좋은 음식을 매일 먹습니다.", audio_id: "L2_039_Bridge_A_6" }] } }] }
 ];
+
+// 💡 컷 안에 말풍선을 하나 더 추가할 때 쓰는 기본값 — 위치는 호출부에서 기준 말풍선 좌표에
+// +40,+40 오프셋을 더해 계산한다(이 객체 자체는 텍스트/색상/꼬리 등 좌표 이외의 기본값만 담당).
+const DEFAULT_NEW_BUBBLE = { width: 400, tail_dir: "bottom", tail_pos: 50, tail_tip: "right", bg_color: "#FFFFFF", border_color: "#000000" };
+const makeBubbleId = () => `bubble_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
  
 // 💡 롤플레이 (A) 단일 뷰 초기 데이터 구조
 const INIT_ROLEPLAY_DATA = {
@@ -435,6 +442,9 @@ export default function App() {
  
   const [activeViewIdx, setActiveViewIdx] = useState(0);
   const [pageData, setPageData] = useState([]);
+  // 💡 [Understand 전용] 한 컷(view) 안에 말풍선이 여러 개일 수 있어, 그중 지금 우측 패널에서
+  // 편집 중인 말풍선의 인덱스를 별도로 관리한다. 컷을 전환하면 0번(첫 말풍선)으로 리셋한다.
+  const [activeBubbleIdx, setActiveBubbleIdx] = useState(0);
   
   const [activeTab, setActiveTab] = useState('view');
  
@@ -453,8 +463,15 @@ export default function App() {
  
   const [toastMsg, setToastMsg] = useState(null);
   const [serverStatus, setServerStatus] = useState('checking'); // 'checking' | 'online' | 'offline'
-  const zipperFlowRef = useRef(null);
-  const [zipperKorFragments, setZipperKorFragments] = useState([]);
+  // 💡 [수정] 한 컷에 zipper 타입 말풍선이 여러 개 있을 수 있어, DOM 참조와 실측 결과 모두
+  // 말풍선 id를 key로 하는 맵으로 관리한다(기존엔 컷당 zipper 1개 전제로 단일 ref/배열이었음).
+  const zipperFlowRefs = useRef({});
+  const [zipperKorFragmentsByBubble, setZipperKorFragmentsByBubble] = useState({});
+  // 💡 [수정] 한글 조각이 영어 문장 마지막 줄보다 아래로 더 길게 내려갈 때(문장이 짧아 한 줄에
+  // 담기지만 한글 해석은 그보다 긴 경우), 말풍선 내부 컨테이너 높이가 그만큼 안 늘어나면 하단의
+  // [해석] 버튼과 겹친다 — 마스터 템플릿의 placeZipperKorean()에 있는 maxKorBottom 보정을
+  // 포팅해서, 실제 필요한 최소 높이를 계산해 flow 컨테이너에 적용한다.
+  const [zipperFlowMinHeightByBubble, setZipperFlowMinHeightByBubble] = useState({});
   // 💡 [롤플레이 A형] 한 턴 안 여러 줄(lines)의 한글을, zipper와 동일한 원리로 각 줄이 실제로
   // 렌더링된 위치(offsetLeft/Top)를 실측해서 그 줄 바로 아래에 절대위치로 배치하기 위한 참조/상태.
   const rolePlayScriptRef = useRef(null);
@@ -567,7 +584,21 @@ export default function App() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [currentPage, activeViewIdx, isAdminMode]);
- 
+
+  // 💡 컷(activeViewIdx)을 전환하면 그 컷의 첫 번째 말풍선부터 편집하도록 리셋한다.
+  useEffect(() => {
+    setActiveBubbleIdx(0);
+  }, [activeViewIdx]);
+
+  // 💡 같은 컷 안에서 말풍선을 삭제해 activeBubbleIdx가 배열 길이를 넘으면(마지막 말풍선을 삭제한
+  // 경우) 마지막 인덱스로 당긴다. 텍스트 편집 등 다른 pageData 변경에서는 인덱스가 범위 안이라 무동작.
+  useEffect(() => {
+    if (contentType !== 'understand') return;
+    const bubbleCount = (pageData[activeViewIdx]?.bubbles || []).length;
+    if (bubbleCount === 0) return;
+    if (activeBubbleIdx >= bubbleCount) setActiveBubbleIdx(bubbleCount - 1);
+  }, [activeViewIdx, contentType, pageData]);
+
   const cropImage = (imgSrc, xPct, yPct, wPct, hPct) => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -768,10 +799,30 @@ export default function App() {
           for (let i = 0; i < (viewsArray.length || 0); i++) {
             const v = viewsArray[i] || {};
             const croppedDataUrl = await cropImage(base64Str, v.x_percent || 0, v.y_percent || 0, v.width_percent || 100, v.height_percent || 100);
-            processedViews.push({ uniqueId: `img_${Date.now()}_${i}`, src: croppedDataUrl, originalInfo: v.originalInfo || `컷 ${i+1}`, inferredType: v.textType || 'inline', extractedEng: v.eng || [] });
+            // 💡 [수정] 컷 하나에 말풍선이 여러 개일 수 있어 v.bubbles(배열)를 기본으로 읽는다.
+            // AI가 옛 스키마(textType/eng를 컷에 바로 붙임)로 응답하면 1개짜리 배열로 감싸 방어하되,
+            // v.bubbles가 빈 배열([])로 온 경우는 "이 컷엔 말풍선이 없다"는 정당한 응답이므로 그대로
+            // 존중한다(예: 대사 없이 그림만 있는 컷) — 예전엔 여기서 빈 배열도 방어 로직을 타서
+            // placeholder 말풍선이 억지로 생기는 버그가 있었음.
+            const rawBubbles = Array.isArray(v.bubbles)
+              ? v.bubbles
+              : (v.textType || (Array.isArray(v.eng) && v.eng.length > 0))
+                ? [{ bubble_x_percent: v.bubble_x_percent, bubble_y_percent: v.bubble_y_percent, textType: v.textType, eng: v.eng }]
+                : [];
+            const bubbles = rawBubbles.map(b => ({
+              inferredType: b.textType || 'inline',
+              extractedEng: b.eng || [],
+              xPercent: typeof b.bubble_x_percent === 'number' ? b.bubble_x_percent : null,
+              yPercent: typeof b.bubble_y_percent === 'number' ? b.bubble_y_percent : null,
+              // 💡 [신규] AI가 꼬리 없는 캡션형 말풍선(has_tail:false)을 인식하면 저장해둔다 —
+              // startEditing()에서 이 값을 보고 tail_dir을 'none'으로 세팅함. 필드가 없으면(구버전
+              // 응답 등) 안전하게 꼬리가 있다고 간주한다.
+              hasTail: b.has_tail !== false
+            }));
+            processedViews.push({ uniqueId: `img_${Date.now()}_${i}`, src: croppedDataUrl, originalInfo: v.originalInfo || `컷 ${i+1}`, bubbles });
           }
           if (processedViews.length === 0) {
-              processedViews.push({ uniqueId: `img_${Date.now()}_fallback`, src: base64Str, originalInfo: "전체 화면 (자동 할당)", inferredType: 'inline', extractedEng: [] });
+              processedViews.push({ uniqueId: `img_${Date.now()}_fallback`, src: base64Str, originalInfo: "전체 화면 (자동 할당)", bubbles: [{ inferredType: 'inline', extractedEng: [], xPercent: null, yPercent: null }] });
           }
           setCroppedViews(processedViews);
           setExtractedTips([]); // understand는 tips 개념이 없음
@@ -793,7 +844,7 @@ export default function App() {
       for (let i = 0; i < 4; i++) {
         const x = (i % 2) * 50; const y = 20 + Math.floor(i / 2) * 35; 
         const croppedDataUrl = await cropImage(base64Str, x, y, 50, 35);
-        fallbackViews.push({ uniqueId: `mock_${Date.now()}_${i}`, src: croppedDataUrl, originalInfo: `가상 컷 ${i+1}`, inferredType: mockTypes[i], extractedEng: [{ sentence: "This is a sample sentence.", kor: "가상 샘플 문장입니다.", audio_id: `L2_039_Bridge_${i+1}` }] });
+        fallbackViews.push({ uniqueId: `mock_${Date.now()}_${i}`, src: croppedDataUrl, originalInfo: `가상 컷 ${i+1}`, bubbles: [{ inferredType: mockTypes[i], extractedEng: [{ sentence: "This is a sample sentence.", kor: "가상 샘플 문장입니다.", audio_id: `L2_039_Bridge_${i+1}` }], xPercent: null, yPercent: null }] });
       }
       setCroppedViews(fallbackViews);
       setExtractedTips([]);
@@ -1135,7 +1186,7 @@ export default function App() {
   };
  
   const deleteView = (indexToRemove) => setCroppedViews(prev => (prev || []).filter((_, idx) => idx !== indexToRemove));
-  const addView = () => setCroppedViews(prev => [...(prev || []), { uniqueId: `img_${Date.now()}`, src: uploadedImage || '', originalInfo: `추가된 컷 ${(prev || []).length + 1}`, inferredType: 'inline', extractedEng: [] }]);
+  const addView = () => setCroppedViews(prev => [...(prev || []), { uniqueId: `img_${Date.now()}`, src: uploadedImage || '', originalInfo: `추가된 컷 ${(prev || []).length + 1}`, bubbles: [{ inferredType: 'inline', extractedEng: [], xPercent: null, yPercent: null }] }]);
  
   const startEditing = () => {
     if (!templates[contentType]) {
@@ -1223,13 +1274,12 @@ export default function App() {
         ]);
       }
     } else {
-      const initialData = (croppedViews || []).map((crop, idx) => {
-        const tpl = TEMPLATE_UNDERSTAND[idx] || {
-          bubble: { width: 400, x: 400, y: 300, tail_dir: "bottom", tail_pos: 50, tail_tip: "right", bg_color: "#FFFFFF", border_color: "#000000" }
-        };
-        
-        let adaptedText = { type: crop.inferredType, eng: JSON.parse(JSON.stringify(crop.extractedEng || [])) };
- 
+      // 💡 [수정] 컷 하나에 말풍선이 여러 개일 수 있어(crop.bubbles 배열), 말풍선마다 아래 텍스트
+      // 정규화 로직을 독립적으로 적용한다. 로직 자체(inline/lines/zipper 구조 변환)는 기존과 동일하고,
+      // 적용 대상만 "컷"에서 "말풍선"으로 바뀌었다.
+      const adaptTextForBubble = (cb, tplBubbleText) => {
+        let adaptedText = { type: cb.inferredType, eng: JSON.parse(JSON.stringify(cb.extractedEng || [])) };
+
         if (adaptedText.eng && adaptedText.eng.length > 0) {
             if (adaptedText.type === 'lines') {
                 if (!adaptedText.eng[0].lines) {
@@ -1244,7 +1294,7 @@ export default function App() {
                         ko: line.ko || line.kor || line.korean || ''
                     }));
                 }
-            } else { 
+            } else {
                 if (adaptedText.eng[0].lines) {
                     adaptedText.eng = (adaptedText.eng[0].lines || []).map((line, lIdx) => ({
                         sentence: line.en || line.sentence || line.eng || '',
@@ -1260,28 +1310,65 @@ export default function App() {
                 }
             }
         }
- 
+
         if(!adaptedText.eng || adaptedText.eng.length === 0) {
-            if (tpl.text && tpl.text.eng) adaptedText.eng = JSON.parse(JSON.stringify(tpl.text.eng));
-            else if (crop.inferredType === 'lines') adaptedText.eng = [{ lines: [{en: "Text", ko: "텍스트"}], audio_id: "" }];
+            if (tplBubbleText && tplBubbleText.eng) adaptedText.eng = JSON.parse(JSON.stringify(tplBubbleText.eng));
+            else if (cb.inferredType === 'lines') adaptedText.eng = [{ lines: [{en: "Text", ko: "텍스트"}], audio_id: "" }];
             else adaptedText.eng = [{ sentence: "Text", kor: "텍스트", audio_id: "" }];
         }
- 
+
         adaptedText.eng = (adaptedText.eng || []).map((item, eIdx) => {
-           const tplEng = tpl.text?.eng?.[eIdx] || {};
+           const tplEng = tplBubbleText?.eng?.[eIdx] || {};
            return { ...item, audio_id: tplEng.audio_id || '' };
         });
- 
-        return { ...tpl, view: `0${idx + 1}`.slice(-2), bgSrc: crop.src, text: adaptedText, id: `box_${Date.now()}_${idx}`, image_aria_label: "" };
+
+        return adaptedText;
+      };
+
+      const initialData = (croppedViews || []).map((crop, idx) => {
+        const tpl = TEMPLATE_UNDERSTAND[idx];
+        // 💡 [수정] crop.bubbles가 빈 배열이면 "이 컷엔 말풍선이 없다"는 뜻이므로 그대로 존중한다
+        // (기본값으로 대체하지 않음 — 대체하면 대사 없는 컷에도 placeholder 말풍선이 생기는 버그가 됨).
+        const cropBubbles = Array.isArray(crop.bubbles) ? crop.bubbles : [{ inferredType: 'inline', extractedEng: [], xPercent: null, yPercent: null }];
+
+        const bubbles = [];
+        cropBubbles.forEach((cb, bIdx) => {
+          const tplBubble = tpl?.bubbles?.[bIdx];
+          const adaptedText = adaptTextForBubble(cb, tplBubble?.text);
+
+          let bubblePos;
+          if (tplBubble) {
+            bubblePos = { ...tplBubble.bubble };
+          } else if (typeof cb.xPercent === 'number' && typeof cb.yPercent === 'number') {
+            // 💡 AI가 컷 내부 상대 %로 준 말풍선 좌표를, 컷 이미지가 실제로 표시되는 고정
+            // 캔버스 영역(left:333, top:193, width:614, height:354)을 기준으로 절대좌표로 변환.
+            bubblePos = { ...DEFAULT_NEW_BUBBLE, x: Math.round(333 + (cb.xPercent / 100) * 614), y: Math.round(193 + (cb.yPercent / 100) * 354) };
+          } else {
+            const prev = bubbles[bubbles.length - 1];
+            bubblePos = prev ? { ...DEFAULT_NEW_BUBBLE, x: prev.bubble.x + 40, y: prev.bubble.y + 40 } : { ...DEFAULT_NEW_BUBBLE, x: 400, y: 300 };
+          }
+          // 💡 [신규] AI가 이 말풍선을 꼬리 없는 캡션형(has_tail:false)으로 인식했으면
+          // 처음부터 tail_dir을 'none'으로 세팅해 꼬리가 그려지지 않게 한다.
+          if (cb.hasTail === false) {
+            bubblePos = { ...bubblePos, tail_dir: 'none' };
+          }
+
+          bubbles.push({ id: makeBubbleId(), bubble: bubblePos, text: adaptedText });
+        });
+
+        return { view: `0${idx + 1}`.slice(-2), bgSrc: crop.src, bubbles, id: `box_${Date.now()}_${idx}`, image_aria_label: "" };
       });
       setPageData(initialData);
+      setActiveBubbleIdx(0);
     }
-    
+
     setCurrentPage(2);
     setActiveViewIdx(0);
   };
  
   const activeData = pageData[activeViewIdx];
+  // 💡 [Understand 전용] 지금 우측 패널에서 편집 중인 말풍선(컷 안에 여러 개 있을 수 있음).
+  const activeBubble = activeData?.bubbles?.[activeBubbleIdx];
 
   // 💡 롤플레이 A형 표 퀴즈 열 너비: 헤더/정적 예시 행 텍스트 길이에 맞춰 매 렌더링마다 재계산.
   const tableQuizColWidths = computeTableQuizColWidths(activeData?.tableQuiz?.headers || [], activeData?.tableQuiz?.staticRow || []);
@@ -1290,15 +1377,18 @@ export default function App() {
   // zipper 문장들이 문장 경계와 상관없이 자연스럽게 흐르며 줄바꿈될 때, 각 문장(.zline-sentence-el)이
   // 실제로 몇 줄에 걸치는지 getClientRects()로 측정해서, 그 줄마다 한글 해석을 알맞은 만큼 나눠
   // 절대위치로 배치합니다. (문장 자체는 절대 쪼개지 않아 hover/클릭 그룹이 유지됩니다)
+  // 💡 [수정] 한 컷 안에 zipper 타입 말풍선이 여러 개일 수 있어, activeData.bubbles 중 zipper인
+  // 것 전부를 순회하며 각각 독립적으로 측정한다(기존엔 컷당 zipper 1개 전제로 단일 ref/배열이었음).
+  // 측정 알고리즘 자체(getClientRects 기반 줄바꿈 실측)는 바뀌지 않았고, 대상만 말풍선 단위로 세분화됨.
   useLayoutEffect(() => {
-    if (!activeData || activeData.text?.type !== 'zipper') {
-      setZipperKorFragments(prev => (prev.length > 0 ? [] : prev));
+    const zipperBubbles = (activeData?.bubbles || []).filter(b => b.text?.type === 'zipper');
+    if (zipperBubbles.length === 0) {
+      setZipperKorFragmentsByBubble(prev => (Object.keys(prev).length > 0 ? {} : prev));
+      setZipperFlowMinHeightByBubble(prev => (Object.keys(prev).length > 0 ? {} : prev));
       return;
     }
-    const flowEl = zipperFlowRef.current;
-    if (!flowEl) return;
- 
-    const splitTextForWidth = (text, widthPx) => {
+
+    const splitTextForWidth = (flowEl, text, widthPx) => {
       const probe = document.createElement('div');
       probe.style.position = 'absolute';
       probe.style.visibility = 'hidden';
@@ -1312,7 +1402,7 @@ export default function App() {
       probe.style.wordBreak = 'keep-all';
       probe.textContent = text;
       flowEl.appendChild(probe);
- 
+
       let result = { firstLine: text, rest: '' };
       const textNode = probe.firstChild;
       if (textNode && textNode.nodeType === Node.TEXT_NODE) {
@@ -1340,22 +1430,45 @@ export default function App() {
       probe.remove();
       return result;
     };
- 
-    const measure = () => {
-      if (!flowEl.isConnected) return;
+
+    // 💡 한글 조각(frag)이 실제로 렌더링됐을 때 몇 px 높이를 차지하는지 측정한다.
+    // splitTextForWidth와 동일한 스타일(NanumGothicBold, 17px, line-height 1.2)의 probe를 만들어 잰다.
+    const measureFragHeight = (flowEl, text, widthPx) => {
+      const probe = document.createElement('div');
+      probe.style.position = 'absolute';
+      probe.style.visibility = 'hidden';
+      probe.style.left = '0';
+      probe.style.top = '0';
+      probe.style.width = `${widthPx}px`;
+      probe.style.whiteSpace = 'normal';
+      probe.style.fontFamily = 'NanumGothicBold, sans-serif';
+      probe.style.fontSize = '17px';
+      probe.style.lineHeight = '1.2';
+      probe.style.wordBreak = 'keep-all';
+      probe.textContent = text;
+      flowEl.appendChild(probe);
+      const h = probe.getBoundingClientRect().height;
+      probe.remove();
+      return h;
+    };
+
+    const measureBubble = (bub) => {
+      const flowEl = zipperFlowRefs.current[bub.id];
+      if (!flowEl || !flowEl.isConnected) return { fragments: [], minHeight: 0 };
       const s = scale || 1;
       const flowRect = flowEl.getBoundingClientRect();
       const flowWidthLogical = flowRect.width / s;
       const sentenceEls = flowEl.querySelectorAll('.zline-sentence-el');
       const newFragments = [];
- 
+      let maxKorBottom = 0;
+
       sentenceEls.forEach((sentenceEl) => {
         const idx = Number(sentenceEl.dataset.idx);
-        const korText = activeData.text.eng?.[idx]?.kor;
+        const korText = bub.text.eng?.[idx]?.kor;
         if (!korText) return;
         const rects = sentenceEl.getClientRects();
         if (!rects || rects.length === 0) return;
- 
+
         let remainder = korText;
         for (let i = 0; i < rects.length && remainder; i++) {
           const rect = rects[i];
@@ -1367,18 +1480,40 @@ export default function App() {
             text = remainder;
             remainder = '';
           } else {
-            const { firstLine, rest } = splitTextForWidth(remainder, availWidth);
+            const { firstLine, rest } = splitTextForWidth(flowEl, remainder, availWidth);
             text = firstLine;
             remainder = rest;
           }
           const offsetTop = (rect.bottom - flowRect.top) / s;
           newFragments.push({ key: `${idx}-${i}`, top: offsetTop, left: offsetLeft, maxWidth: availWidth, text });
+          const fragHeightLogical = measureFragHeight(flowEl, text, availWidth) / s;
+          maxKorBottom = Math.max(maxKorBottom, offsetTop + fragHeightLogical);
         }
       });
- 
-      setZipperKorFragments(newFragments);
+
+      // 💡 한글 조각이 영어 줄보다 더 아래로 내려가면 그 깊이만큼 flow 컨테이너의 minHeight를
+      // 강제해서 [해석] 버튼과 안 겹치게 공간을 확보한다. CSS min-height는 실제 콘텐츠가 이미 더
+      // 크면 아무 효과가 없으므로(자연스럽게 큰 쪽이 적용됨) 조건 분기 없이 항상 적용해도 안전하다.
+      // (이전엔 flowRect.height와 비교해서 "필요할 때만" 적용했는데, 폰트 로딩 후 재측정하는
+      // 두 번째 패스에서 그 flowRect.height 자체가 첫 번째 패스의 minHeight 적용 결과를 반영한
+      // 값이라 "이미 충분하다"고 오판하여 minHeight가 다시 0으로 풀리는 자기참조 버그가 있었음.)
+      const minHeight = maxKorBottom > 0 ? maxKorBottom + 10 : 0; // probe 측정 오차 감안 여유값
+
+      return { fragments: newFragments, minHeight };
     };
- 
+
+    const measure = () => {
+      const fragResult = {};
+      const heightResult = {};
+      zipperBubbles.forEach(bub => {
+        const { fragments, minHeight } = measureBubble(bub);
+        fragResult[bub.id] = fragments;
+        heightResult[bub.id] = minHeight;
+      });
+      setZipperKorFragmentsByBubble(fragResult);
+      setZipperFlowMinHeightByBubble(heightResult);
+    };
+
     measure();
     if (document.fonts && document.fonts.status !== 'loaded') {
       document.fonts.ready.then(() => requestAnimationFrame(measure));
@@ -1519,29 +1654,72 @@ export default function App() {
     }
   }, [activeData, scale, contentType]);
 
+  // 💡 [수정] id는 이제 컷 id가 아니라 말풍선 id다. 드래그 오프셋 계산에 필요한 시작 좌표도
+  // activeData.bubbles에서 그 말풍선을 찾아 읽는다.
   const handleMouseDown = (e, id) => {
     if (contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return;
     e.preventDefault();
     if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') return;
     if(!containerRef.current) return;
+    const bub = (activeData?.bubbles || []).find(b => b.id === id);
+    if (!bub) return;
     const rect = containerRef.current.getBoundingClientRect();
     setDraggingBoxId(id);
-    setDragOffset({ x: (e.clientX - rect.left) / (rect.width / 1280) - activeData.bubble.x, y: (e.clientY - rect.top) / (rect.height / 720) - activeData.bubble.y });
+    setDragOffset({ x: (e.clientX - rect.left) / (rect.width / 1280) - bub.bubble.x, y: (e.clientY - rect.top) / (rect.height / 720) - bub.bubble.y });
   };
-  
+
   const handleMouseMove = (e) => {
     if (!draggingBoxId || !containerRef.current || contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return;
     const rect = containerRef.current.getBoundingClientRect();
     let newX = (e.clientX - rect.left) / (rect.width / 1280) - dragOffset.x;
     let newY = (e.clientY - rect.top) / (rect.height / 720) - dragOffset.y;
-    setPageData(prev => (prev || []).map(data => data.id === draggingBoxId ? { ...data, bubble: { ...data.bubble, x: Math.round(newX), y: Math.round(newY) } } : data));
+    // 💡 현재 활성 컷(activeViewIdx) 안의 말풍선만 드래그 대상이 될 수 있으므로 그 컷만 갱신한다.
+    setPageData(prev => (prev || []).map((data, idx) => idx !== activeViewIdx ? data : {
+      ...data,
+      bubbles: (data.bubbles || []).map(b => b.id === draggingBoxId ? { ...b, bubble: { ...b.bubble, x: Math.round(newX), y: Math.round(newY) } } : b)
+    }));
   };
-  
+
   const handleMouseUp = () => setDraggingBoxId(null);
-  
-  const updateBubbleProp = (field, value) => setPageData(prev => (prev || []).map((data, idx) => idx === activeViewIdx ? { ...data, bubble: { ...data.bubble, [field]: value } } : data));
+
+  // 💡 [수정] activeBubbleIdx로 선택된 말풍선의 bubble 속성을 수정한다.
+  const updateBubbleProp = (field, value) => setPageData(prev => (prev || []).map((data, idx) => {
+    if (idx !== activeViewIdx) return data;
+    return { ...data, bubbles: (data.bubbles || []).map((b, bIdx) => bIdx === activeBubbleIdx ? { ...b, bubble: { ...b.bubble, [field]: value } } : b) };
+  }));
   const updateViewProp = (field, value) => setPageData(prev => (prev || []).map((data, idx) => idx === activeViewIdx ? { ...data, [field]: value } : data));
- 
+
+  // 💡 [신규] 현재 컷(activeViewIdx)에 말풍선을 하나 더 추가한다. 위치는 지금 선택된(activeBubbleIdx)
+  // 말풍선 기준으로 +40,+40 오프셋한 빈 inline 말풍선으로 시작하고, 추가된 말풍선을 자동 선택한다.
+  const addBubble = () => {
+    let newIdx = 0;
+    setPageData(prev => (prev || []).map((data, idx) => {
+      if (idx !== activeViewIdx) return data;
+      const bubbles = data.bubbles || [];
+      const ref = bubbles[activeBubbleIdx] || bubbles[bubbles.length - 1];
+      const newBubble = {
+        id: makeBubbleId(),
+        bubble: ref ? { ...ref.bubble, x: ref.bubble.x + 40, y: ref.bubble.y + 40 } : { ...DEFAULT_NEW_BUBBLE, x: 400, y: 300 },
+        text: { type: 'inline', eng: [{ sentence: "", kor: "", audio_id: "" }] }
+      };
+      newIdx = bubbles.length;
+      return { ...data, bubbles: [...bubbles, newBubble] };
+    }));
+    setActiveBubbleIdx(newIdx);
+  };
+
+  // 💡 [신규] 최소 1개는 항상 남긴다(롤플레이 A/C형의 "턴에는 최소 1줄" 규칙과 동일한 이유 —
+  // 컷에 말풍선이 0개면 편집 대상이 없어져 UI가 깨진다).
+  const deleteBubble = () => {
+    setPageData(prev => (prev || []).map((data, idx) => {
+      if (idx !== activeViewIdx) return data;
+      const bubbles = data.bubbles || [];
+      if (bubbles.length <= 1) return data;
+      return { ...data, bubbles: bubbles.filter((_, bIdx) => bIdx !== activeBubbleIdx) };
+    }));
+    setActiveBubbleIdx(prev => Math.max(0, prev - 1));
+  };
+
   // 💡 [복원] 말풍선 꼬리(포인터)의 위치/회전을 계산합니다. (구버전 260601_v1_5에서 발견 및 복원)
   // bubble.tail_dir(꼬리 방향: top/bottom/left/right), bubble.tail_pos(꼬리 위치 %)를 기반으로
   // SVG 꼬리 요소에 적용할 style 객체를 반환합니다. 실제 곡선 모양(path)은 JSX에서 tail_tip 값으로 그립니다.
@@ -1555,23 +1733,31 @@ export default function App() {
     return style;
   };
  
+  // 💡 [수정] understand(else 분기)일 때는 data.text가 아니라 data.bubbles[activeBubbleIdx].text를 수정한다.
+  const updateActiveBubbleTextInData = (data, updater) => ({
+    ...data,
+    bubbles: (data.bubbles || []).map((b, bIdx) => bIdx === activeBubbleIdx ? { ...b, text: updater(b.text) } : b)
+  });
+
   const handleTextTypeChange = (newType) => {
     setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx || contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return data;
-      let newEng = [...(data.text?.eng || [])];
-      const oldType = data.text?.type || 'inline';
-      if ((oldType === 'inline' || oldType === 'zipper') && newType === 'lines') {
-        const lines = newEng.map(item => ({ en: item.sentence || '', ko: item.kor || '' }));
-        newEng = [{ lines: lines.length ? lines : [{en: '', ko: ''}], audio_id: newEng[0]?.audio_id || '' }];
-      } else if (oldType === 'lines' && (newType === 'inline' || newType === 'zipper')) {
-        const firstBlock = newEng[0] || {};
-        newEng = (firstBlock.lines || []).map((line, lineIdx) => ({ sentence: line.en || '', kor: line.ko || '', audio_id: lineIdx === 0 ? (firstBlock.audio_id || '') : '' }));
-        if(newEng.length === 0) newEng = [{ sentence: '', kor: '', audio_id: '' }];
-      }
-      return { ...data, text: { ...data.text, type: newType, eng: newEng } };
+      return updateActiveBubbleTextInData(data, (text) => {
+        let newEng = [...(text?.eng || [])];
+        const oldType = text?.type || 'inline';
+        if ((oldType === 'inline' || oldType === 'zipper') && newType === 'lines') {
+          const lines = newEng.map(item => ({ en: item.sentence || '', ko: item.kor || '' }));
+          newEng = [{ lines: lines.length ? lines : [{en: '', ko: ''}], audio_id: newEng[0]?.audio_id || '' }];
+        } else if (oldType === 'lines' && (newType === 'inline' || newType === 'zipper')) {
+          const firstBlock = newEng[0] || {};
+          newEng = (firstBlock.lines || []).map((line, lineIdx) => ({ sentence: line.en || '', kor: line.ko || '', audio_id: lineIdx === 0 ? (firstBlock.audio_id || '') : '' }));
+          if(newEng.length === 0) newEng = [{ sentence: '', kor: '', audio_id: '' }];
+        }
+        return { ...text, type: newType, eng: newEng };
+      });
     }));
   };
- 
+
   const handleSentenceChange = (engIdx, field, value) => {
     setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx) return data;
@@ -1580,31 +1766,35 @@ export default function App() {
           newDialogues[engIdx] = { ...newDialogues[engIdx], [field]: value };
           return { ...data, dialogues: newDialogues };
       } else {
-          const newEng = [...(data.text?.eng || [])];
-          newEng[engIdx] = { ...newEng[engIdx], [field]: value };
-          return { ...data, text: { ...data.text, eng: newEng } };
+          return updateActiveBubbleTextInData(data, (text) => {
+            const newEng = [...(text?.eng || [])];
+            newEng[engIdx] = { ...newEng[engIdx], [field]: value };
+            return { ...text, eng: newEng };
+          });
       }
     }));
   };
-  
+
   const handleLinesChange = (engIdx, lineIdx, field, value) => {
     if (contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return;
     setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx) return data;
-      const newEng = [...(data.text?.eng || [])];
-      const newLines = [...(newEng[engIdx].lines || [])];
-      newLines[lineIdx] = { ...newLines[lineIdx], [field]: value };
-      newEng[engIdx] = { ...newEng[engIdx], lines: newLines };
-      return { ...data, text: { ...data.text, eng: newEng } };
+      return updateActiveBubbleTextInData(data, (text) => {
+        const newEng = [...(text?.eng || [])];
+        const newLines = [...(newEng[engIdx].lines || [])];
+        newLines[lineIdx] = { ...newLines[lineIdx], [field]: value };
+        newEng[engIdx] = { ...newEng[engIdx], lines: newLines };
+        return { ...text, eng: newEng };
+      });
     }));
   };
-  
+
   const addSentence = () => setPageData(prev => (prev || []).map((data, idx) => {
      if (idx !== activeViewIdx) return data;
      if (contentType === 'roleplay_a' || contentType === 'roleplay_c') {
          return { ...data, dialogues: [...(data.dialogues || []), { speaker: "A", lines: [{ sentence: "", kor: "", audio_id: "", hasBlank: false, muteTargets: "0" }] }] };
      }
-     return { ...data, text: { ...data.text, eng: [...(data.text?.eng || []), { sentence: "", kor: "", audio_id: "" }] } };
+     return updateActiveBubbleTextInData(data, (text) => ({ ...text, eng: [...(text?.eng || []), { sentence: "", kor: "", audio_id: "" }] }));
   }));
 
   // 💡 [롤플레이 A형/C형 공용] 한 턴(같은 화자) 안에 오디오/빈칸이 독립적인 줄을 여러 개 담을 수 있도록
@@ -1646,24 +1836,28 @@ export default function App() {
   
   const addLine = (engIdx) => setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx || contentType === 'roleplay_a' || contentType === 'roleplay_c') return data;
-      const newEng = [...(data.text?.eng || [])];
-      newEng[engIdx].lines.push({ en: "", ko: "" });
-      return { ...data, text: { ...data.text, eng: newEng } };
+      return updateActiveBubbleTextInData(data, (text) => {
+        const newEng = [...(text?.eng || [])];
+        newEng[engIdx] = { ...newEng[engIdx], lines: [...(newEng[engIdx].lines || []), { en: "", ko: "" }] };
+        return { ...text, eng: newEng };
+      });
   }));
-  
+
   const removeSentence = (engIdx) => setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx) return data;
       if (contentType === 'roleplay_a' || contentType === 'roleplay_c') {
           return { ...data, dialogues: (data.dialogues || []).filter((_, i) => i !== engIdx) };
       }
-      return { ...data, text: { ...data.text, eng: (data.text?.eng || []).filter((_, i) => i !== engIdx) } };
+      return updateActiveBubbleTextInData(data, (text) => ({ ...text, eng: (text?.eng || []).filter((_, i) => i !== engIdx) }));
   }));
-  
+
   const removeLine = (engIdx, lineIdx) => setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx || contentType === 'roleplay_a' || contentType === 'roleplay_c') return data;
-      const newEng = [...(data.text?.eng || [])];
-      newEng[engIdx].lines = (newEng[engIdx].lines || []).filter((_, i) => i !== lineIdx);
-      return { ...data, text: { ...data.text, eng: newEng } };
+      return updateActiveBubbleTextInData(data, (text) => {
+        const newEng = [...(text?.eng || [])];
+        newEng[engIdx] = { ...newEng[engIdx], lines: (newEng[engIdx].lines || []).filter((_, i) => i !== lineIdx) };
+        return { ...text, eng: newEng };
+      });
   }));
  
   // 💡 [복원] '공통 설정' 탭 전체(헤더/영상/더보기 등)에서 사용하는 범용 업데이트 함수.
@@ -2003,13 +2197,21 @@ export default function App() {
               return eng.length === 0 || eng.every(item => !String(item?.sentence || '').trim());
             };
  
+            // 💡 [수정] 컷당 말풍선이 여러 개일 수 있어 bubbles 배열로 내보낸다(기존 bubble/text 단수
+            // 필드 대체). 텍스트가 빈 말풍선은 배열에서 제외한다(개수가 가변이라 null 자리 유지가
+            // 의미 없음 — 기존 bubble:null 방식과 동일한 취지). 마스터 템플릿이 이 배열 스키마를
+            // 실제로 지원하는지는 별도 확인 필요(docs/understand_multi_bubble_master_template_prompt.md 참고).
             const exportPageData = (pageData || []).map(data => {
-              const bubbleEmpty = isBubbleTextEmpty(data.text);
+              const exportBubbles = (data.bubbles || [])
+                .filter(b => !isBubbleTextEmpty(b.text))
+                .map(b => ({
+                  bubble: { width: b.bubble.width, x: b.bubble.x, y: b.bubble.y, tail_dir: b.bubble.tail_dir, tail_pos: b.bubble.tail_pos, tail_tip: b.bubble.tail_tip || 'right', bg_color: b.bubble.bg_color, border_color: b.bubble.border_color },
+                  text: { type: b.text.type, eng: b.text.eng }
+                }));
               return {
                 image_url: `./images/view${data.view}/image.png`,
                 image_aria_label: data.image_aria_label || "이미지 설명",
-                bubble: bubbleEmpty ? null : { width: data.bubble.width, x: data.bubble.x, y: data.bubble.y, tail_dir: data.bubble.tail_dir, tail_pos: data.bubble.tail_pos, tail_tip: data.bubble.tail_tip || 'right', bg_color: data.bubble.bg_color, border_color: data.bubble.border_color },
-                text: { type: data.text.type, eng: data.text.eng }
+                bubbles: exportBubbles
               };
             });
             fileContent = `// [1. 공통 데이터]\nconst GLOBAL_DATA = ${JSON.stringify(exportGlobalData, null, 2)};\n\n// [2. 개별 페이지 데이터]\nconst PAGE_DATA = ${JSON.stringify(exportPageData, null, 2)};\n`;
@@ -2445,74 +2647,93 @@ export default function App() {
                        </>
                      )}
  
-                     {/* 인터랙티브 드래그 가능 말풍선 (260601 원본 padding/색상 값 그대로 적용) */}
-                     <div onMouseDown={(e) => handleMouseDown(e, activeData.id)} style={{ position: 'absolute', left: activeData.bubble.x, top: activeData.bubble.y, width: activeData.bubble.width, minHeight: 80, padding: activeData.text?.type === 'zipper' ? '5px 10px 42px 17px' : '20px 10px 52px 17px', borderRadius: 20, backgroundColor: activeData.bubble.bg_color || '#FFFFFF', border: `3px solid ${activeData.bubble.border_color || '#000000'}`, zIndex: 2 }} className={`cursor-move flex flex-col ${draggingBoxId === activeData.id ? 'ring-4 ring-emerald-500 shadow-2xl' : 'shadow-lg'}`}>
- 
-                       {/* 말풍선 꼬리(포인터) — 꼬리 방향/위치는 getTailStyle, 뾰족한 끝 방향은 tail_tip으로 결정 */}
-                       <svg className="bubble-tail-svg" style={getTailStyle(activeData.bubble)} viewBox="0 0 60 50">
-                           {(() => {
-                              const tailTip = activeData.bubble?.tail_tip || 'right';
-                              const pathD = tailTip === 'left' ? "M 55,0 Q 45,35 5,45 Q 25,20 25,0" : "M 5,0 Q 15,35 55,45 Q 35,20 35,0";
-                              return (
-                                <>
-                                  <path d={`${pathD} Z`} fill={activeData.bubble?.bg_color || '#FFFFFF'} />
-                                  <path d={pathD} fill="none" stroke={activeData.bubble?.border_color || '#000000'} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                                </>
-                              )
-                           })()}
-                       </svg>
- 
-                       <div style={{ fontFamily: 'sans-serif', fontSize: 27, fontWeight: 'bold', lineHeight: activeData.text?.type === 'lines' ? 1.5 : 0.85, color: '#000', wordBreak: 'keep-all' }}>
-                         {activeData.text?.type === 'lines' ? (
-                           // 💡 실제 템플릿(view01.js)과 동일: lines 그룹 전체가 1개 오디오, 줄마다 en(block) + ko(그 바로 뒤)
-                           (activeData.text?.eng?.[0]?.lines || []).map((line, lIdx) => (
-                             <div key={lIdx} style={{ marginTop: lIdx === 0 ? 0 : 8 }}>
-                               <div style={{ display: 'block' }}>{String(line.en || "텍스트")}</div>
-                               {line.ko ? <div style={{ display: 'block', fontSize: 18, fontWeight: 'bold', color: '#06c', marginTop: 2 }}>{String(line.ko)}</div> : null}
-                             </div>
-                           ))
-                         ) : activeData.text?.type === 'zipper' ? (
-                           // 💡 [수정 10 - 실제 템플릿 로직 그대로] 문장들을 문장 경계와 상관없이 자연스럽게
-                           // 흐르도록(inline) 배치하고, 각 문장은 절대 쪼개지 않아 hover/클릭 그룹이 유지됩니다.
-                           // 한글 해석은 useLayoutEffect의 실측 로직(zipperKorFragments)이 절대위치로 배치합니다.
-                           <div ref={zipperFlowRef} style={{ position: 'relative', wordBreak: 'keep-all' }}>
-                             {(activeData.text?.eng || []).map((item, engIdx) => (
-                               <span
-                                 key={engIdx}
-                                 className="zline-sentence-el"
-                                 data-idx={engIdx}
-                                 style={{ display: 'inline', lineHeight: 2.2 }}
-                                 dangerouslySetInnerHTML={{ __html: String(item.sentence || "텍스트") + ' ' }}
-                               />
-                             ))}
-                             {zipperKorFragments.map(frag => (
-                               <div key={frag.key} style={{ position: 'absolute', top: frag.top, left: frag.left, maxWidth: frag.maxWidth, fontFamily: 'NanumGothicBold, sans-serif', fontSize: 17, color: '#06c', lineHeight: 1.2, margin: 0, pointerEvents: 'none' }}>
-                                 {frag.text}
+                     {/* 인터랙티브 드래그 가능 말풍선 (260601 원본 padding/색상 값 그대로 적용) —
+                         💡 [수정] 한 컷에 말풍선이 여러 개일 수 있어 activeData.bubbles 배열 전체를
+                         동시에 렌더링한다. 클릭/드래그 시작한 말풍선이 activeBubbleIdx로 선택되어
+                         우측 편집 패널이 그 말풍선을 대상으로 동작한다. */}
+                     {(activeData.bubbles || []).map((bub, bIdx) => (
+                       <div key={bub.id}
+                         onMouseDown={(e) => { setActiveBubbleIdx(bIdx); handleMouseDown(e, bub.id); }}
+                         style={{ position: 'absolute', left: bub.bubble.x, top: bub.bubble.y, width: bub.bubble.width, minHeight: 80, padding: bub.text?.type === 'zipper' ? '5px 10px 42px 17px' : '20px 10px 52px 17px', borderRadius: 20, backgroundColor: bub.bubble.bg_color || '#FFFFFF', border: `3px solid ${bub.bubble.border_color || '#000000'}`, zIndex: 2 }}
+                         className={`cursor-move flex flex-col ${draggingBoxId === bub.id ? 'ring-4 ring-emerald-500 shadow-2xl' : bIdx === activeBubbleIdx ? 'ring-2 ring-indigo-400 shadow-lg' : 'shadow-lg'}`}>
+
+                         {/* 말풍선 꼬리(포인터) — 꼬리 방향/위치는 getTailStyle, 뾰족한 끝 방향은 tail_tip으로 결정.
+                             💡 [신규] tail_dir이 'none'이면(캡션형 박스, 꼬리 없음) 아예 그리지 않는다. */}
+                         {bub.bubble?.tail_dir !== 'none' && (
+                           <svg className="bubble-tail-svg" style={getTailStyle(bub.bubble)} viewBox="0 0 60 50">
+                               {(() => {
+                                  const tailTip = bub.bubble?.tail_tip || 'right';
+                                  const pathD = tailTip === 'left' ? "M 55,0 Q 45,35 5,45 Q 25,20 25,0" : "M 5,0 Q 15,35 55,45 Q 35,20 35,0";
+                                  return (
+                                    <>
+                                      <path d={`${pathD} Z`} fill={bub.bubble?.bg_color || '#FFFFFF'} />
+                                      <path d={pathD} fill="none" stroke={bub.bubble?.border_color || '#000000'} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                                    </>
+                                  )
+                               })()}
+                           </svg>
+                         )}
+
+                         <div style={{ fontFamily: 'sans-serif', fontSize: 27, fontWeight: 'bold', lineHeight: bub.text?.type === 'lines' ? 1.5 : 0.85, color: '#000', wordBreak: 'keep-all' }}>
+                           {bub.text?.type === 'lines' ? (
+                             // 💡 실제 템플릿(view01.js)과 동일: lines 그룹 전체가 1개 오디오, 줄마다 en(block) + ko(그 바로 뒤)
+                             (bub.text?.eng?.[0]?.lines || []).map((line, lIdx) => (
+                               <div key={lIdx} style={{ marginTop: lIdx === 0 ? 0 : 8 }}>
+                                 <div style={{ display: 'block' }}>{String(line.en || "텍스트")}</div>
+                                 {line.ko ? <div style={{ display: 'block', fontSize: 18, fontWeight: 'bold', color: '#06c', marginTop: 2 }}>{String(line.ko)}</div> : null}
                                </div>
-                             ))}
-                           </div>
-                         ) : (
-                           // 💡 inline: 실제 템플릿처럼 전체를 한 줄(nowrap)로 이어붙임 — 넘치면 잘릴 수 있으니
-                           // 글자 수가 너무 길면 애초에 inline이 아니라 zipper로 판정되어야 함을 눈으로 확인 가능
-                           <>
-                             <div style={{ whiteSpace: 'nowrap' }}>
-                               {(activeData.text?.eng || []).map((item, engIdx) => (
-                                 <span key={engIdx} dangerouslySetInnerHTML={{ __html: String(item.sentence || "텍스트 ") }} style={{ display: 'inline', marginRight: 5 }} />
+                             ))
+                           ) : bub.text?.type === 'zipper' ? (
+                             // 💡 [수정 10 - 실제 템플릿 로직 그대로] 문장들을 문장 경계와 상관없이 자연스럽게
+                             // 흐르도록(inline) 배치하고, 각 문장은 절대 쪼개지 않아 hover/클릭 그룹이 유지됩니다.
+                             // 한글 해석은 useLayoutEffect의 실측 로직(zipperKorFragmentsByBubble)이 이 말풍선
+                             // id 기준으로 절대위치로 배치합니다(컷 안에 zipper 말풍선이 여러 개여도 독립 계산됨).
+                             <div ref={el => { if (el) zipperFlowRefs.current[bub.id] = el; else delete zipperFlowRefs.current[bub.id]; }} style={{ position: 'relative', wordBreak: 'keep-all', minHeight: zipperFlowMinHeightByBubble[bub.id] || 'auto' }}>
+                               {(bub.text?.eng || []).map((item, engIdx) => (
+                                 <span
+                                   key={engIdx}
+                                   className="zline-sentence-el"
+                                   data-idx={engIdx}
+                                   style={{ display: 'inline', lineHeight: 2.2 }}
+                                   dangerouslySetInnerHTML={{ __html: String(item.sentence || "텍스트") + ' ' }}
+                                 />
+                               ))}
+                               {(zipperKorFragmentsByBubble[bub.id] || []).map(frag => (
+                                 <div key={frag.key} style={{ position: 'absolute', top: frag.top, left: frag.left, maxWidth: frag.maxWidth, fontFamily: 'NanumGothicBold, sans-serif', fontSize: 17, color: '#06c', lineHeight: 1.2, margin: 0, pointerEvents: 'none' }}>
+                                   {frag.text}
+                                 </div>
                                ))}
                              </div>
-                             {(activeData.text?.eng || []).some(item => item.kor) ? (
-                               <div style={{ fontSize: 18, fontWeight: 'bold', color: '#06c', marginTop: 4, whiteSpace: 'normal' }}>
-                                 {(activeData.text?.eng || []).map(item => item.kor).filter(Boolean).join(' ')}
+                           ) : (
+                             // 💡 [수정] inline: 문장들을 이어붙이되, 말풍선 폭을 넘으면 브라우저가 자연스럽게
+                             // 줄바꿈한다(고정 nowrap 강제 제거 — 실사용 중 말풍선보다 문장이 길면 텍스트가
+                             // 잘리지 않고 밖으로 흘러넘치는 문제가 발견됨). 문장마다 별도 <span>은 그대로
+                             // 유지되어 eng 배열의 문장 단위(오디오 클릭 그룹) 구분은 바뀌지 않는다.
+                             <>
+                               <div style={{ whiteSpace: 'normal' }}>
+                                 {(bub.text?.eng || []).map((item, engIdx) => (
+                                   <span key={engIdx} dangerouslySetInnerHTML={{ __html: String(item.sentence || "텍스트 ") }} style={{ display: 'inline', marginRight: 5 }} />
+                                 ))}
                                </div>
-                             ) : null}
-                           </>
+                               {(bub.text?.eng || []).some(item => item.kor) ? (
+                                 <div style={{ fontSize: 18, fontWeight: 'bold', color: '#06c', marginTop: 4, whiteSpace: 'normal' }}>
+                                   {(bub.text?.eng || []).map(item => item.kor).filter(Boolean).join(' ')}
+                                 </div>
+                               ) : null}
+                             </>
+                           )}
+                         </div>
+
+                         {/* 해석 버튼 (모든 유형 공통, 원본과 동일) */}
+                         <button style={{ position: 'absolute', left: 17, bottom: 10, minWidth: 75, height: 32, fontSize: 14, fontWeight: 'bold', color: '#fff', backgroundColor: '#24a683', borderRadius: 50, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '0 15px 2px', pointerEvents: 'none', border: 'none' }}>해석</button>
+
+                         {/* 💡 말풍선이 2개 이상일 때만 번호 배지 표시(1개뿐이면 굳이 안 보여줘도 됨) */}
+                         {(activeData.bubbles || []).length > 1 && (
+                           <div style={{ position: 'absolute', left: -10, top: -10, width: 24, height: 24, borderRadius: '50%', backgroundColor: bIdx === activeBubbleIdx ? '#6366f1' : '#9ca3af', color: '#fff', fontSize: 12, fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3, pointerEvents: 'none' }}>{bIdx + 1}</div>
                          )}
                        </div>
- 
-                       {/* 해석 버튼 (모든 유형 공통, 원본과 동일) */}
-                       <button style={{ position: 'absolute', left: 17, bottom: 10, minWidth: 75, height: 32, fontSize: 14, fontWeight: 'bold', color: '#fff', backgroundColor: '#24a683', borderRadius: 50, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '0 15px 2px', pointerEvents: 'none', border: 'none' }}>해석</button>
-                     </div>
- 
+                     ))}
+
                      {/* 💡 [수정 3] 공통 설정 > 내용 더 보기 토글(globalData.more_content.has_content)과 미리보기 연동 */}
                      {/* 260601 원본 그대로: 정확한 좌표(left:96.5, top:563.15)와 색상(#ee6f00), 실제 화살표 아이콘 에셋 사용 */}
                      {globalData.more_content.has_content ? (
@@ -2848,69 +3069,94 @@ export default function App() {
                         </div>
                       </section>
  
+                      {/* 💡 [신규] 말풍선 선택/추가/삭제 — 컷 하나에 말풍선이 여러 개일 수 있어,
+                          그중 지금 아래 항목들이 편집할 대상을 여기서 고른다. */}
+                      <section className="bg-indigo-50 rounded-xl p-3 border border-indigo-100">
+                        <div className="flex items-center justify-between">
+                          <button onClick={() => setActiveBubbleIdx(i => Math.max(0, i - 1))} disabled={activeBubbleIdx === 0} className="w-7 h-7 flex items-center justify-center rounded-full bg-white border border-indigo-200 text-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed">‹</button>
+                          <span className="text-xs font-bold text-indigo-800">{(activeData.bubbles || []).length === 0 ? '이 컷에는 말풍선이 없음' : `말풍선 ${activeBubbleIdx + 1} / ${(activeData.bubbles || []).length}`}</span>
+                          <button onClick={() => setActiveBubbleIdx(i => Math.min((activeData.bubbles || []).length - 1, i + 1))} disabled={activeBubbleIdx >= (activeData.bubbles || []).length - 1} className="w-7 h-7 flex items-center justify-center rounded-full bg-white border border-indigo-200 text-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed">›</button>
+                        </div>
+                        <div className="flex gap-2 mt-2">
+                          <button onClick={addBubble} className="flex-1 py-1.5 bg-indigo-100 text-indigo-700 text-xs font-bold rounded hover:bg-indigo-200 transition">+ 말풍선 추가</button>
+                          {(activeData.bubbles || []).length > 1 && (
+                            <button onClick={deleteBubble} className="flex-1 py-1.5 bg-red-50 text-red-600 text-xs font-bold rounded hover:bg-red-100 transition">🗑 이 말풍선 삭제</button>
+                          )}
+                        </div>
+                      </section>
+
+                      {/* 💡 [수정] 이 컷에 말풍선이 하나도 없으면(대사 없이 그림만 있는 컷) 좌표/꼬리/색상/
+                          텍스트 편집 섹션 자체를 숨긴다 — activeBubble이 undefined인 채로 이 섹션들을
+                          그리면 입력해도 반영 안 되는 죽은 UI가 되고, "말풍선 1/0" 같은 혼란도 생김. */}
+                      {(activeData.bubbles || []).length === 0 ? (
+                        <section className="text-center py-6 text-gray-400 text-sm">
+                          이 컷에는 말풍선이 없습니다.<br />위 "+ 말풍선 추가" 버튼으로 필요할 때 추가하세요.
+                        </section>
+                      ) : (
+                        <>
                       <section>
                         <h3 className="font-bold text-sm text-gray-700 border-b pb-2 mb-3">📐 말풍선 좌표 및 크기</h3>
                         <div className="grid grid-cols-3 gap-3 text-sm">
-                          <div><label className="block text-gray-500 text-xs mb-1">X 좌표</label><input type="number" value={activeData.bubble?.x || 0} onChange={e => updateBubbleProp('x', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg bg-gray-50 font-bold focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
-                          <div><label className="block text-gray-500 text-xs mb-1">Y 좌표</label><input type="number" value={activeData.bubble?.y || 0} onChange={e => updateBubbleProp('y', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg bg-gray-50 font-bold focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
-                          <div><label className="block text-gray-500 text-xs mb-1">너비 (W)</label><input type="number" value={activeData.bubble?.width || 0} onChange={e => updateBubbleProp('width', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                          <div><label className="block text-gray-500 text-xs mb-1">X 좌표</label><input type="number" value={activeBubble?.bubble?.x || 0} onChange={e => updateBubbleProp('x', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg bg-gray-50 font-bold focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                          <div><label className="block text-gray-500 text-xs mb-1">Y 좌표</label><input type="number" value={activeBubble?.bubble?.y || 0} onChange={e => updateBubbleProp('y', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg bg-gray-50 font-bold focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                          <div><label className="block text-gray-500 text-xs mb-1">너비 (W)</label><input type="number" value={activeBubble?.bubble?.width || 0} onChange={e => updateBubbleProp('width', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
                         </div>
                       </section>
- 
+
                       <section>
                         <h3 className="font-bold text-sm text-gray-700 border-b pb-2 mb-3">🎨 말풍선 꼬리</h3>
                         <div className="grid grid-cols-3 gap-3 text-sm mb-3">
-                          <div><label className="block text-gray-500 text-[11px] font-bold mb-1">꼬리 방향</label><select value={activeData.bubble?.tail_dir || 'bottom'} onChange={e => updateBubbleProp('tail_dir', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer bg-white"><option value="bottom">Bottom (하단)</option><option value="top">Top (상단)</option><option value="left">Left (좌측)</option><option value="right">Right (우측)</option></select></div>
-                          <div><label className="block text-gray-500 text-[11px] font-bold mb-1">꼬리 위치 (%)</label><input type="number" min="0" max="100" value={activeData.bubble?.tail_pos || 50} onChange={e => updateBubbleProp('tail_pos', Number(e.target.value))} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none bg-white" /></div>
+                          <div><label className="block text-gray-500 text-[11px] font-bold mb-1">꼬리 방향</label><select value={activeBubble?.bubble?.tail_dir || 'bottom'} onChange={e => updateBubbleProp('tail_dir', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer bg-white"><option value="bottom">Bottom (하단)</option><option value="top">Top (상단)</option><option value="left">Left (좌측)</option><option value="right">Right (우측)</option><option value="none">없음 (꼬리 삭제)</option></select></div>
+                          <div><label className="block text-gray-500 text-[11px] font-bold mb-1">꼬리 위치 (%)</label><input type="number" min="0" max="100" disabled={activeBubble?.bubble?.tail_dir === 'none'} value={activeBubble?.bubble?.tail_pos || 50} onChange={e => updateBubbleProp('tail_pos', Number(e.target.value))} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none bg-white disabled:bg-gray-100 disabled:text-gray-400" /></div>
                           <div>
                             <label className="block text-gray-500 text-[11px] font-bold mb-1">꼬리 끝 방향</label>
-                            <select value={activeData.bubble?.tail_tip || 'right'} onChange={e => updateBubbleProp('tail_tip', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer bg-white">
+                            <select disabled={activeBubble?.bubble?.tail_dir === 'none'} value={activeBubble?.bubble?.tail_tip || 'right'} onChange={e => updateBubbleProp('tail_tip', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer bg-white disabled:bg-gray-100 disabled:text-gray-400">
                               <option value="right">오른쪽 휨</option>
                               <option value="left">왼쪽 휨</option>
                             </select>
                           </div>
                         </div>
                       </section>
- 
+
                       <section>
                         <h3 className="font-bold text-sm text-gray-700 border-b pb-2 mb-3">🎨 말풍선 색상</h3>
                         <div className="grid grid-cols-2 gap-3 text-sm mb-3">
                           <div>
                             <label className="block text-gray-500 text-xs mb-1">배경색 (bg_color)</label>
                             <div className="flex border border-gray-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500">
-                              <input type="color" value={activeData.bubble?.bg_color || '#ffffff'} onChange={e => updateBubbleProp('bg_color', e.target.value)} className="w-10 h-9 p-0 border-0 cursor-pointer shrink-0" />
-                              <input type="text" value={activeData.bubble?.bg_color || '#ffffff'} onChange={e => updateBubbleProp('bg_color', e.target.value)} className="w-full text-xs p-2 bg-white outline-none" placeholder="#FFFFFF" />
+                              <input type="color" value={activeBubble?.bubble?.bg_color || '#ffffff'} onChange={e => updateBubbleProp('bg_color', e.target.value)} className="w-10 h-9 p-0 border-0 cursor-pointer shrink-0" />
+                              <input type="text" value={activeBubble?.bubble?.bg_color || '#ffffff'} onChange={e => updateBubbleProp('bg_color', e.target.value)} className="w-full text-xs p-2 bg-white outline-none" placeholder="#FFFFFF" />
                             </div>
                           </div>
                           <div>
                             <label className="block text-gray-500 text-xs mb-1">테두리색 (border_color)</label>
                             <div className="flex border border-gray-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500">
-                              <input type="color" value={activeData.bubble?.border_color || '#000000'} onChange={e => updateBubbleProp('border_color', e.target.value)} className="w-10 h-9 p-0 border-0 cursor-pointer shrink-0" />
-                              <input type="text" value={activeData.bubble?.border_color || '#000000'} onChange={e => updateBubbleProp('border_color', e.target.value)} className="w-full text-xs p-2 bg-white outline-none" placeholder="#000000" />
+                              <input type="color" value={activeBubble?.bubble?.border_color || '#000000'} onChange={e => updateBubbleProp('border_color', e.target.value)} className="w-10 h-9 p-0 border-0 cursor-pointer shrink-0" />
+                              <input type="text" value={activeBubble?.bubble?.border_color || '#000000'} onChange={e => updateBubbleProp('border_color', e.target.value)} className="w-full text-xs p-2 bg-white outline-none" placeholder="#000000" />
                             </div>
                           </div>
                         </div>
                       </section>
- 
+
                       <section>
                         <div className="flex justify-between items-center border-b pb-2 mb-3">
                            <h3 className="font-bold text-sm text-gray-700">📝 텍스트 렌더링 타입</h3>
-                           <select value={activeData.text?.type || 'inline'} onChange={(e) => handleTextTypeChange(e.target.value)} className="border border-emerald-400 bg-emerald-50 text-emerald-800 text-xs font-bold rounded-full px-3 py-1 cursor-pointer outline-none">
+                           <select value={activeBubble?.text?.type || 'inline'} onChange={(e) => handleTextTypeChange(e.target.value)} className="border border-emerald-400 bg-emerald-50 text-emerald-800 text-xs font-bold rounded-full px-3 py-1 cursor-pointer outline-none">
                              <option value="inline">Inline (한 줄 이음)</option>
                              <option value="lines">Lines (1오디오 여러 줄)</option>
                              <option value="zipper">Zipper (개별 오디오 분리)</option>
                            </select>
                         </div>
-                        
+
                         <div className="space-y-4">
-                          {activeData.text?.type === 'lines' ? (
-                            (activeData.text?.eng || []).map((engItem, engIdx) => (
+                          {activeBubble?.text?.type === 'lines' ? (
+                            (activeBubble?.text?.eng || []).map((engItem, engIdx) => (
                               <div key={engIdx} className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl relative shadow-sm">
                                 <div className="flex justify-between items-center mb-2">
                                    <label className="text-indigo-800 text-xs font-bold">오디오 ID (통합)</label>
                                    <input type="text" value={engItem.audio_id || ''} onChange={e => handleSentenceChange(engIdx, 'audio_id', e.target.value)} className="w-48 p-1.5 text-xs border border-indigo-300 rounded font-mono focus:ring-1 focus:ring-indigo-500 outline-none" placeholder="L2_039_Bridge_A_3" />
                                 </div>
-                                
+
                                 <div className="space-y-2 mt-3">
                                   {(engItem.lines || []).map((line, lineIdx) => (
                                     <div key={lineIdx} className="pl-3 border-l-2 border-indigo-300 relative group">
@@ -2925,17 +3171,17 @@ export default function App() {
                               </div>
                             ))
                           ) : (
-                            (activeData.text?.eng || []).map((item, engIdx) => (
+                            (activeBubble?.text?.eng || []).map((item, engIdx) => (
                                <div key={engIdx} className="p-3 bg-gray-50 border border-gray-200 rounded-xl relative group shadow-sm">
                                  <button onClick={() => removeSentence(engIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
                                  <div className="text-xs font-bold text-gray-500 mb-2">문장 {engIdx + 1}</div>
-                                 
+
                                  <label className="block text-emerald-700 text-[11px] font-bold mb-1">영어 (en)</label>
                                  <textarea value={item.sentence || ''} onChange={e => handleSentenceChange(engIdx, 'sentence', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="영어 문장 입력 (<br> 사용 가능)" />
-                                 
+
                                  <label className="block text-emerald-700 text-[11px] font-bold mb-1">한글 해석 (ko)</label>
                                  <textarea value={item.kor || ''} onChange={e => handleSentenceChange(engIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력 (<br> 사용 가능)" />
-                                 
+
                                  <label className="block text-emerald-700 text-[11px] font-bold mb-1">오디오 ID</label>
                                  <input type="text" value={item.audio_id || ''} onChange={e => handleSentenceChange(engIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L2_039_Bridge_A_1" />
                                </div>
@@ -2944,6 +3190,8 @@ export default function App() {
                           <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-gray-300 text-gray-500 text-xs font-bold rounded-xl hover:bg-gray-100 hover:text-gray-700 transition">+ 새로운 문장 추가</button>
                         </div>
                       </section>
+                        </>
+                      )}
                     </>
                   )}
  
