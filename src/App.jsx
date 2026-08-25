@@ -167,6 +167,33 @@ const TEMPLATE_UNDERSTAND = [
 // +40,+40 오프셋을 더해 계산한다(이 객체 자체는 텍스트/색상/꼬리 등 좌표 이외의 기본값만 담당).
 const DEFAULT_NEW_BUBBLE = { width: 400, tail_dir: "bottom", tail_pos: 50, tail_tip: "right", bg_color: "#FFFFFF", border_color: "#000000" };
 const makeBubbleId = () => `bubble_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+// 💡 [How to play 안내 문구 편집] 롤플레이 A/B/C형 공통으로 있는 [How to play] 버튼의 4단계 안내
+// 문구 기본값. 유형마다(특히 B형은 필드 구조까지) 기본 문구가 다르므로 유형별로 따로 둔다.
+// 사용자는 "공통 설정" 탭에서 이 기본값을 콘텐츠에 맞게 자유롭게 고쳐 쓸 수 있다.
+const HOWTOPLAY_DEFAULT_LINES = {
+  roleplay_a: [
+    ["버튼을 눌러 예시 대화를", "확인하고 이야기해 보세요."],
+    ["역할을 선택해 보세요."],
+    ["내가 맡은 역할의 대사를", "가리고 말해 보세요."],
+    ["예시 대화를 참고하여 친구들과 대화한 후,", "표에 알맞은 내용을 써 보세요."]
+  ],
+  roleplay_c: [
+    ["버튼을 눌러 예시 대화를", "확인하고 이야기해 보세요."],
+    ["역할을 선택해 보세요."],
+    ["내가 맡은 역할의 대사를", "가리고 말해 보세요."],
+    ["화면 하단의 화살표를 눌러", "다른 대화 갈래도 확인해 보세요."]
+  ],
+  roleplay_b: [
+    ["걱정하는 상황을", "선택해 보세요."],
+    ["역할을 선택해 보세요."],
+    ["각 대사들의", "해석을 확인하세요."],
+    ["내가 맡은 역할의", "대사를 가리고", "말해 보세요."]
+  ]
+};
+// 💡 A/C형 export에서만 쓰이는 말풍선 꼬리 방향 — 위치 지정용이라 사용자가 편집할 대상은 아니므로
+// 문구 상태(howToPlayLines)와 별개로 고정값을 둔다.
+const HOWTOPLAY_TAILS_AC = ["left", "top", "bottom", "top"];
  
 // 💡 롤플레이 (A) 단일 뷰 초기 데이터 구조
 const INIT_ROLEPLAY_DATA = {
@@ -454,6 +481,9 @@ export default function App() {
     video_aria_label: "",
     more_content: { has_content: false, content_text: "" }
   });
+  // 💡 [How to play 안내 문구 편집] 롤플레이 A/B/C형 [How to play] 버튼의 4단계 안내 문구.
+  // 유형별 기본값(HOWTOPLAY_DEFAULT_LINES)으로 시작하고, "공통 설정" 탭에서 자유롭게 고쳐 쓸 수 있다.
+  const [howToPlayLines, setHowToPlayLines] = useState(HOWTOPLAY_DEFAULT_LINES.roleplay_a);
  
   const [scale, setScale] = useState(1);
   const wrapperRef = useRef(null);
@@ -598,6 +628,31 @@ export default function App() {
     if (bubbleCount === 0) return;
     if (activeBubbleIdx >= bubbleCount) setActiveBubbleIdx(bubbleCount - 1);
   }, [activeViewIdx, contentType, pageData]);
+
+  // 💡 [How to play 안내 문구] 유형이 A/B/C 사이에서 바뀌면(1단계 AI 판정 또는 "유형 변경" 기능),
+  // 그 유형의 기본 안내 문구로 리셋한다. understand로 바뀌면(How to play 버튼 자체가 없음) 손대지 않는다.
+  useEffect(() => {
+    if (HOWTOPLAY_DEFAULT_LINES[contentType]) {
+      setHowToPlayLines(HOWTOPLAY_DEFAULT_LINES[contentType]);
+    }
+  }, [contentType]);
+
+  // 💡 [How to play 안내 문구 편집] "공통 설정" 탭 textarea 한 칸(줄바꿈으로 여러 줄 구분)을
+  // stepIdx번째 단계의 lines 배열로 반영한다. textarea는 controlled 컴포넌트라 여기서 트레일링
+  // 빈 줄을 지워버리면, 사용자가 방금 입력한 개행(Enter)이 리렌더 즉시 사라져 보이는 버그가
+  // 생긴다(입력 중인 값은 있는 그대로 저장) — 트레일링 빈 줄 정리는 내보내기 시점에만 한다.
+  const updateHowToPlayLine = (stepIdx, text) => {
+    const lines = text.split('\n');
+    setHowToPlayLines(prev => prev.map((l, i) => i === stepIdx ? lines : l));
+  };
+
+  // 💡 [How to play 안내 문구 export 전용] 편집 중 남을 수 있는 트레일링 빈 줄만 내보내기
+  // 직전에 정리한다(최소 1줄은 유지).
+  const cleanHowToPlaySteps = () => howToPlayLines.map(lines => {
+    const cleaned = [...lines];
+    while (cleaned.length > 1 && cleaned[cleaned.length - 1] === '') cleaned.pop();
+    return cleaned.length ? cleaned : [''];
+  });
 
   const cropImage = (imgSrc, xPct, yPct, wPct, hPct) => {
     return new Promise((resolve) => {
@@ -2015,13 +2070,9 @@ export default function App() {
                     },
                     instruction: roleplayInstruction
                 },
-                howToPlay: [
-                    { step: 1, tail: "left", lines: ["버튼을 눌러 예시 대화를", "확인하고 이야기해 보세요."] },
-                    { step: 2, tail: "top", lines: ["역할을 선택해 보세요."] },
-                    { step: 3, tail: "bottom", lines: ["내가 맡은 역할의 대사를", "가리고 말해 보세요."] },
-                    // 💡 특정 레슨 주제(예: 여가 활동)를 가정한 문구 대신, 모든 콘텐츠에 공통 적용 가능한 범용 문구로 변경.
-                    { step: 4, tail: "top", lines: ["예시 대화를 참고하여 친구들과 대화한 후,", "표에 알맞은 내용을 써 보세요."] }
-                ],
+                // 💡 "공통 설정" 탭에서 편집한 문구(howToPlayLines)를 그대로 내보낸다. 꼬리 방향(tail)은
+                // 사용자가 편집하는 대상이 아니라 고정 위치값이라 HOWTOPLAY_TAILS_AC에서 가져온다.
+                howToPlay: cleanHowToPlaySteps().map((lines, i) => ({ step: i + 1, tail: HOWTOPLAY_TAILS_AC[i] || "top", lines })),
                 rolePlay: {
                     toggleBtn: { ariaLabel: "클릭 시 대화창 바꾸기" },
                     // 🚀 [추출 최적화] 불필요한 구형 껍데기(blankData 등) 완벽 제거 및 순수 Flat 포맷 내보내기
@@ -2117,12 +2168,7 @@ export default function App() {
                     },
                     instruction: roleplayInstruction
                 },
-                howToPlay: [
-                    { step: 1, tail: "left", lines: ["버튼을 눌러 예시 대화를", "확인하고 이야기해 보세요."] },
-                    { step: 2, tail: "top", lines: ["역할을 선택해 보세요."] },
-                    { step: 3, tail: "bottom", lines: ["내가 맡은 역할의 대사를", "가리고 말해 보세요."] },
-                    { step: 4, tail: "top", lines: ["화면 하단의 화살표를 눌러", "다른 대화 갈래도 확인해 보세요."] }
-                ],
+                howToPlay: cleanHowToPlaySteps().map((lines, i) => ({ step: i + 1, tail: HOWTOPLAY_TAILS_AC[i] || "top", lines })),
                 rolePlay: {
                     toggleBtn: { ariaLabel: "클릭 시 대화창 바꾸기" },
                     pages: (pageData || []).map((page, idx) => ({
@@ -2161,12 +2207,7 @@ export default function App() {
                           `    howToPlayBtn: "How to play",\n` +
                           `    howToPlayLabel: "클릭 시 HowToPlay 창 열기",\n` +
                           `    howToPlayImage: "big_pop_HowToPlay.png",\n` +
-                          `    howToPlaySteps: [\n` +
-                          `        { step: 1, text: ["걱정하는 상황을", "선택해 보세요."] },\n` +
-                          `        { step: 2, text: ["역할을 선택해 보세요."] },\n` +
-                          `        { step: 3, text: ["각 대사들의", "해석을 확인하세요."] },\n` +
-                          `        { step: 4, text: ["내가 맡은 역할의", "대사를 가리고", "말해 보세요."] }\n` +
-                          `    ]\n` +
+                          `    howToPlaySteps: ${JSON.stringify(cleanHowToPlaySteps().map((lines, i) => ({ step: i + 1, text: lines })), null, 4).replace(/\n/g, '\n    ')}\n` +
                           `};\n\n` +
                           `const rolePlayData = ${JSON.stringify(formattedBData, null, 2)};\n`;
 
@@ -3646,11 +3687,31 @@ export default function App() {
                       ) : null}
                     </section>
                   )}
+
+                  {/* 💡 [How to play 안내 문구 편집] 롤플레이 A/B/C형 공통 — [How to play] 버튼을 눌렀을 때
+                      나오는 4단계 안내 문구. understand는 이 버튼 자체가 없으므로 숨김. */}
+                  {(contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') && (
+                    <section>
+                      <h3 className="font-bold text-sm text-gray-700 border-b pb-2 mb-3">❓ How to play 안내 문구</h3>
+                      <div className="space-y-3">
+                        {howToPlayLines.map((lines, stepIdx) => (
+                          <div key={stepIdx}>
+                            <label className="block text-gray-500 text-[11px] font-bold mb-1">STEP {stepIdx + 1} (줄바꿈으로 여러 줄 구분)</label>
+                            <textarea
+                              value={lines.join('\n')}
+                              onChange={e => updateHowToPlayLine(stepIdx, e.target.value)}
+                              className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-14 bg-white"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
                 </div>
               )}
- 
+
             </div>
-            
+
             <div className="p-4 bg-white border-t border-gray-200 shrink-0">
               <button onClick={handleExportZip} className="w-full bg-emerald-600 text-white font-bold py-3.5 rounded-xl hover:bg-emerald-700 transition shadow-md text-[15px] flex justify-center items-center gap-2">
                 <span>📦</span> 무결점 병합 추출 (전체 ZIP 다운로드)
