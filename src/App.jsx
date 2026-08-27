@@ -3592,8 +3592,8 @@ export default function App() {
 
                                 <div className="flex items-center gap-2">
                                    <select value={turn.speaker || 'A'} onChange={e => handleSentenceChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-purple-900 rounded bg-purple-100 border border-purple-300 outline-none cursor-pointer">
-                                      <option value="A">화자 A</option>
-                                      <option value="B">화자 B</option>
+                                      <option value="A">A 역할</option>
+                                      <option value="B">B 역할</option>
                                    </select>
                                    <span className="text-[10px] text-gray-400">이 턴 안에서 여러 줄(각각 별도 오디오)을 이어서 말하게 할 수 있습니다.</span>
                                 </div>
@@ -3753,8 +3753,8 @@ export default function App() {
 
                                 <div className="flex items-center gap-2">
                                    <select value={turn.speaker || 'A'} onChange={e => handleSentenceChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-fuchsia-900 rounded bg-fuchsia-100 border border-fuchsia-300 outline-none cursor-pointer">
-                                      <option value="A">화자 A</option>
-                                      <option value="B">화자 B</option>
+                                      <option value="A">A 역할</option>
+                                      <option value="B">B 역할</option>
                                    </select>
                                    <span className="text-[10px] text-gray-400">이 턴 안에서 여러 줄(각각 별도 오디오)을 이어서 말하게 할 수 있습니다.</span>
                                 </div>
