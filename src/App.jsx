@@ -5,6 +5,11 @@ import previewRoleplayBLook from './assets/preview-roleplay-b-look.png';
 import previewRoleplayBThink from './assets/preview-roleplay-b-think.png';
 import previewRoleplayCLook from './assets/preview-roleplay-c-look.png';
 import previewRoleplayCThink from './assets/preview-roleplay-c-think.png';
+// 💡 [인트로 유형 전용] 배경/타이틀 이미지를 사용자가 아직 업로드하기 전, 캔버스에 보여줄
+// 기본 예시 이미지. 캔버스 미리보기 전용이며 ZIP export에는 절대 포함하지 않는다(사용자 확정 결정) —
+// 실제 업로드된 이미지가 있을 때만 export한다(handleExportZip의 intro 분기 참고).
+import introPlaceholderBg from './assets/intro-placeholder-bg.png';
+import introPlaceholderTitle from './assets/intro-placeholder-title.png';
 
 // 💡 [1단계 유형 미리보기 팝업] contentType별 대표 예시 이미지.
 // "이 유형은 일반적으로 이렇게 생겼다"는 고정 참고자료이며, 업로드한 특정 페이지의 실제 결과가 아님.
@@ -17,6 +22,7 @@ const TYPE_PREVIEW_IMAGES = {
   roleplay_a: { default: previewRoleplayA },
   roleplay_b: { lookAndTalk: previewRoleplayBLook, thinkAndTalk: previewRoleplayBThink, default: previewRoleplayBThink },
   roleplay_c: { lookAndTalk: previewRoleplayCLook, thinkAndTalk: previewRoleplayCThink, default: previewRoleplayCLook },
+  intro: { default: introPlaceholderBg },
 };
 
 function getPreviewImageSrc(contentType, title) {
@@ -38,6 +44,7 @@ function getPreviewImageSrc(contentType, title) {
 function getDisplayTypeName(contentType, title) {
   const t = String(title || '').toLowerCase();
   if (contentType === 'understand') return 'Understand';
+  if (contentType === 'intro') return 'Intro';
   if (contentType === 'roleplay_a') {
     if (t.includes('talk and complete')) return 'Talk and Complete';
     return String(title || 'Talk and Complete');
@@ -428,7 +435,7 @@ const INIT_ROLEPLAY_C_PAGES = [
 
 export default function App() {
   const [isAdminMode, setIsAdminMode] = useState(false);
-  const [templates, setTemplates] = useState({ understand: null, roleplay_a: null, roleplay_b: null, roleplay_c: null });
+  const [templates, setTemplates] = useState({ understand: null, roleplay_a: null, roleplay_b: null, roleplay_c: null, intro: null });
  
   const [currentPage, setCurrentPage] = useState(1);
   const [uploadedImage, setUploadedImage] = useState(null);
@@ -463,7 +470,11 @@ export default function App() {
   // 씬별로 나누지 않고 별도 상태로 두고, 편집 패널이 직접 읽어 읽기 전용으로 보여준다.
   // view 자동 전개(단일 슬롯형)는 추출 프롬프트가 이미 끝내두므로 여기서 추가로 조합하지 않는다.
   const [extractedTips, setExtractedTips] = useState([]);
- 
+  // 💡 [인트로 전용] AI가 지면에서 추출하는 건 '학습 목표' 라벨의 메인 색상과 배경 이미지
+  // 접근성 설명뿐이다(다른 텍스트는 이 지면에 없거나 사용자가 직접 입력하는 영역이라 추출 대상이 아님).
+  const [extractedIntroColor, setExtractedIntroColor] = useState('');
+  const [extractedIntroAriaLabel, setExtractedIntroAriaLabel] = useState('');
+
   const dragItem = useRef(null);
   const dragOverItem = useRef(null);
  
@@ -570,13 +581,14 @@ export default function App() {
  
   useEffect(() => {
     loadAllTemplatesDB().then(savedData => {
-      const loadedTemplates = { understand: null, roleplay_a: null, roleplay_b: null, roleplay_c: null };
+      const loadedTemplates = { understand: null, roleplay_a: null, roleplay_b: null, roleplay_c: null, intro: null };
 
       // 기획 롤백 복구를 위해 가이드 ZIP 디폴트 객체 매핑 안정적 보존
       loadedTemplates.understand = { name: "Understand_Default.zip", blob: new Blob() };
       loadedTemplates.roleplay_a = { name: "Roleplay_A_Default.zip", blob: new Blob() };
       loadedTemplates.roleplay_b = { name: "Roleplay_B_Default.zip", blob: new Blob() };
       loadedTemplates.roleplay_c = { name: "Roleplay_C_Default.zip", blob: new Blob() };
+      loadedTemplates.intro = { name: "Intro_Default.zip", blob: new Blob() };
  
       if (savedData && savedData.length > 0) {
         savedData.forEach(item => {
@@ -635,6 +647,13 @@ export default function App() {
     if (HOWTOPLAY_DEFAULT_LINES[contentType]) {
       setHowToPlayLines(HOWTOPLAY_DEFAULT_LINES[contentType]);
     }
+  }, [contentType]);
+
+  // 💡 [인트로 전용] "공통 설정" 탭(헤더/영상/How to play 등)이 이 유형엔 없으므로 탭 자체를 숨긴다
+  // (아래 우측 패널 렌더 참고) — 이전 유형에서 'global' 탭을 보던 중 intro로 바뀌면 빈 탭에
+  // 머물지 않도록 'view' 탭으로 되돌린다.
+  useEffect(() => {
+    if (contentType === 'intro') setActiveTab('view');
   }, [contentType]);
 
   // 💡 [How to play 안내 문구 편집] "공통 설정" 탭 textarea 한 칸(줄바꿈으로 여러 줄 구분)을
@@ -723,7 +742,10 @@ export default function App() {
       // 공존하는 지면이 나오면 표 퀴즈 데이터를 못 받아 이 우선순위를 적용할 수 없다. 사용자가
       // "그럴 일은 없다"고 확인했으므로 지금은 이 전제 하에 그대로 둔다 — 실제로 그런 지면이
       // 나오면 lib/analyzePrompt.js의 B형 추출 지시문(9번)에 표 퀴즈 체크를 추가해야 한다.
-      const rawType = aiData.contentType === 'roleplay_b' ? 'roleplay_b' : (aiData.contentType === 'roleplay' ? 'roleplay' : 'understand');
+      // 💡 [방어적 파싱] AI가 대소문자/공백을 다르게 반환해도(예: "Intro", " intro ") 오분류로
+      // understand에 떨어지지 않도록 정규화해서 비교한다.
+      const normalizedAiType = String(aiData.contentType || '').trim().toLowerCase();
+      const rawType = normalizedAiType === 'roleplay_b' ? 'roleplay_b' : (normalizedAiType === 'intro' ? 'intro' : (normalizedAiType === 'roleplay' ? 'roleplay' : 'understand'));
       let parsedType = rawType;
       if (rawType === 'roleplay') {
         const hasTableQuiz = !!(aiData.tableQuiz && Array.isArray(aiData.tableQuiz.headers) && aiData.tableQuiz.headers.length > 0);
@@ -848,6 +870,18 @@ export default function App() {
               setExtractedPagesC([]);
           }
           setExtractedTableQuiz(null);
+      } else if (parsedType === 'intro') {
+          // 💡 [인트로 전용] 이 유형은 표지 디자인처럼 이미지 위주 지면이라, AI가 추출하는 건
+          // '학습 목표' 라벨 색상과 배경 이미지 접근성 설명뿐이다. 배경/타이틀 이미지 자체는
+          // 항상 사용자가 직접 업로드하며(자동 크롭 없음), startEditing()이 기본 예시 이미지로
+          // 채워둔다.
+          setExtractedIntroColor(String(aiData.mainColor || ''));
+          setExtractedIntroAriaLabel(String(aiData.mainImageAriaLabel || ''));
+          setExtractedDialogues([]);
+          setExtractedScenesB([]);
+          setExtractedPagesC([]);
+          setExtractedTips([]);
+          setExtractedTableQuiz(null);
       } else {
           const processedViews = [];
           const viewsArray = Array.isArray(aiData?.views) ? aiData.views : (Array.isArray(aiData) ? aiData : []);
@@ -882,6 +916,8 @@ export default function App() {
           setCroppedViews(processedViews);
           setExtractedTips([]); // understand는 tips 개념이 없음
           setExtractedPagesC([]);
+          setExtractedIntroColor('');
+          setExtractedIntroAriaLabel('');
       }
       showToast("✨ AI 분석 완료!");
     } catch (error) {
@@ -904,6 +940,8 @@ export default function App() {
       setCroppedViews(fallbackViews);
       setExtractedTips([]);
       setExtractedPagesC([]);
+      setExtractedIntroColor('');
+      setExtractedIntroAriaLabel('');
     } finally {
       setIsAnalyzing(false);
     }
@@ -1328,6 +1366,29 @@ export default function App() {
           { pageId: 1, dialogues: JSON.parse(JSON.stringify(initialDialogues)), id: `page_c_${now}_1` }
         ]);
       }
+    } else if (contentType === 'intro') {
+      // 💡 [인트로 전용] 페이지/씬 개념이 없는 단일 화면 유형이라 pageData에는 1개짜리 항목만 둔다
+      // (activeData가 truthy여야 2단계 캔버스가 렌더되므로, 다른 유형처럼 배열 형태는 유지).
+      // 배경/타이틀 이미지는 사용자가 업로드하기 전까지 기본 예시 이미지(플레이스홀더)로 채우고,
+      // export 시에는 이 플레이스홀더를 절대 내보내지 않는다(bgFileName/titleFileName이 비어있으면
+      // 업로드 전으로 간주 — handleExportZip 참고).
+      setPageData([{
+        id: `box_${Date.now()}_intro`,
+        learningObjectiveTitle: '학습 목표',
+        learningObjectiveColor: extractedIntroColor || '#eb1e79',
+        learningObjective: '',
+        titleAudioId: '',
+        mainImageAriaLabel: extractedIntroAriaLabel || '',
+        bgSrc: introPlaceholderBg,
+        bgFileName: '',
+        titleSrc: introPlaceholderTitle,
+        titleFileName: '',
+        // 💡 [신규] 타이틀 이미지 위치/크기 — 마스터 템플릿(view01.html) 기본값(top:20,left:50,width:460)으로
+        // 시작하고, 캔버스에서 드래그(위치)·숫자 입력(너비)으로 조정 가능(높이는 원본 비율 유지, 자동).
+        titleX: 50,
+        titleY: 20,
+        titleWidth: 460
+      }]);
     } else {
       // 💡 [수정] 컷 하나에 말풍선이 여러 개일 수 있어(crop.bubbles 배열), 말풍선마다 아래 텍스트
       // 정규화 로직을 독립적으로 적용한다. 로직 자체(inline/lines/zipper 구조 변환)는 기존과 동일하고,
@@ -1711,14 +1772,24 @@ export default function App() {
 
   // 💡 [수정] id는 이제 컷 id가 아니라 말풍선 id다. 드래그 오프셋 계산에 필요한 시작 좌표도
   // activeData.bubbles에서 그 말풍선을 찾아 읽는다.
+  // 💡 [인트로 전용] 타이틀 이미지 드래그 대상을 가리키는 고정 id — 말풍선 id와 겹칠 일이 없는
+  // 고정 문자열이라 draggingBoxId 하나로 두 종류(말풍선/타이틀 이미지)를 함께 관리할 수 있다.
+  const INTRO_TITLE_DRAG_ID = 'intro_title_image';
+
   const handleMouseDown = (e, id) => {
     if (contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') return;
     e.preventDefault();
     if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') return;
     if(!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    if (id === INTRO_TITLE_DRAG_ID) {
+      if (!activeData) return;
+      setDraggingBoxId(id);
+      setDragOffset({ x: (e.clientX - rect.left) / (rect.width / 1280) - (activeData.titleX ?? 50), y: (e.clientY - rect.top) / (rect.height / 720) - (activeData.titleY ?? 20) });
+      return;
+    }
     const bub = (activeData?.bubbles || []).find(b => b.id === id);
     if (!bub) return;
-    const rect = containerRef.current.getBoundingClientRect();
     setDraggingBoxId(id);
     setDragOffset({ x: (e.clientX - rect.left) / (rect.width / 1280) - bub.bubble.x, y: (e.clientY - rect.top) / (rect.height / 720) - bub.bubble.y });
   };
@@ -1728,6 +1799,10 @@ export default function App() {
     const rect = containerRef.current.getBoundingClientRect();
     let newX = (e.clientX - rect.left) / (rect.width / 1280) - dragOffset.x;
     let newY = (e.clientY - rect.top) / (rect.height / 720) - dragOffset.y;
+    if (draggingBoxId === INTRO_TITLE_DRAG_ID) {
+      setPageData(prev => (prev || []).map((data, idx) => idx !== activeViewIdx ? data : { ...data, titleX: Math.round(newX), titleY: Math.round(newY) }));
+      return;
+    }
     // 💡 현재 활성 컷(activeViewIdx) 안의 말풍선만 드래그 대상이 될 수 있으므로 그 컷만 갱신한다.
     setPageData(prev => (prev || []).map((data, idx) => idx !== activeViewIdx ? data : {
       ...data,
@@ -1960,6 +2035,24 @@ export default function App() {
     reader.readAsDataURL(file);
   };
  
+  // 💡 [인트로 전용] 배경/타이틀 이미지를 사용자가 직접 업로드한다(자동 크롭 없음, 사용자 확정 결정).
+  // 업로드 전까지 보이던 기본 예시 이미지(introPlaceholderBg/Title)를 실제 데이터로 교체하고,
+  // 원본 파일명(export 시 images/ 경로에 쓰일 이름)도 함께 저장한다. 파일명이 채워져 있어야만
+  // handleExportZip이 "실제로 업로드됨"으로 간주해 ZIP에 이미지를 심는다.
+  const handleIntroImageUpload = (e, field) => {
+    if (contentType !== 'intro') return;
+    const file = e.target.files[0];
+    if (!file) return;
+    const srcField = field === 'bg' ? 'bgSrc' : 'titleSrc';
+    const nameField = field === 'bg' ? 'bgFileName' : 'titleFileName';
+    const safeName = file.name.replace(/[^\w.\-]+/g, '_');
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setPageData(prev => (prev || []).map((data, idx) => idx === activeViewIdx ? { ...data, [srcField]: event.target.result, [nameField]: safeName } : data));
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleTableQuizChange = (field, colIndex, prop, value) => {
       setPageData(prev => (prev || []).map((data, idx) => {
           if (idx !== activeViewIdx) return data;
@@ -2005,6 +2098,16 @@ export default function App() {
   // 구버전(콘텐츠_양산_에이전트_260622_v1_0)에서 복원한 로직이며, 현재 상태 구조(templates/pageData/globalData)와
   // 필드명을 대조 확인하여 그대로 이식했습니다.
   const handleExportZip = async () => {
+    // 💡 [인트로 전용] 배경/타이틀 이미지는 항상 사용자가 직접 업로드해야 한다(자동 크롭 없음).
+    // 업로드 전 기본 예시 이미지(플레이스홀더)가 그대로 남아 있으면(파일명 미설정) 실제 레슨과
+    // 무관한 예시 이미지가 배포되는 것을 막기 위해 export 자체를 막는다(사용자 확정 결정).
+    if (contentType === 'intro') {
+      const introPage = pageData[0] || {};
+      if (!introPage.bgFileName || !introPage.titleFileName) {
+        showToast('⚠️ 배경/타이틀 이미지를 먼저 업로드해야 ZIP을 추출할 수 있습니다 (아직 예시 이미지 상태).');
+        return;
+      }
+    }
     const templateRecord = templates[contentType];
     if (!templateRecord || !templateRecord.blob) {
       showToast("관리자 템플릿이 등록되지 않아 추출할 수 없습니다.");
@@ -2224,6 +2327,43 @@ export default function App() {
               }
             });
 
+        } else if (contentType === 'intro') {
+            // 💡 [인트로 전용 — data.js 스키마] 마스터 템플릿(view01.html)이 그대로 읽는 필드명 그대로
+            // (learningObjectiveTitle/Color/learningObjective/titleAudioId/mainImageAriaLabel/
+            // bgImagePath/titleImagePath). animationConfig는 편집 대상이 아닌 죽은 코드(CreateJS
+            // 인트로 애니메이션, 주석 처리됨)라 고정값만 채운다.
+            const introPage = pageData[0] || {};
+            const introExportData = {
+              learningObjectiveTitle: String(introPage.learningObjectiveTitle || '학습 목표'),
+              learningObjectiveColor: String(introPage.learningObjectiveColor || '#eb1e79'),
+              learningObjective: String(introPage.learningObjective || ''),
+              titleAudioId: String(introPage.titleAudioId || ''),
+              mainImageAriaLabel: String(introPage.mainImageAriaLabel || ''),
+              // 💡 images/ 폴더 바로 아래(하위 폴더 없음) — 사용자 확정 규칙(다른 유형의
+              // images/view0X/와 다름).
+              bgImagePath: `./images/${introPage.bgFileName}`,
+              titleImagePath: `./images/${introPage.titleFileName}`,
+              // 💡 [신규 — 마스터 템플릿 반영 필요] 타이틀 이미지 위치/너비. 현재 마스터 템플릿
+              // (view01.html)은 이 값을 읽지 않고 top:20/left:50/width:460으로 고정되어 있으므로,
+              // 저작 도구에서 드래그·숫자 입력으로 바꿔도 실제 ZIP 병합 결과에는 반영되지 않는다 —
+              // view01.html이 이 3개 필드를 읽어 인라인 스타일에 반영하도록 마스터 템플릿 쪽
+              // 별도 작업이 필요함(다른 유형 사례처럼 작업 프롬프트로 이관 예정).
+              titleX: Number(introPage.titleX ?? 50),
+              titleY: Number(introPage.titleY ?? 20),
+              titleWidth: Number(introPage.titleWidth ?? 460),
+              animationConfig: { jsPath: "./3rdparty/cc/animation.js", assetsPath: "./3rdparty/cc", linkName: "LinkStep_0" }
+            };
+            fileContent = `var contentData = ${JSON.stringify(introExportData, null, 2)};\n`;
+
+            // 💡 플레이스홀더(캔버스 미리보기 전용 기본 예시 이미지)는 위 export 가드에서 이미
+            // 걸러졌으므로, 여기 도달했다는 건 두 이미지 다 사용자가 실제로 업로드했다는 뜻이다.
+            if (introPage.bgSrc && introPage.bgSrc.startsWith('data:image')) {
+              newZip.file(`images/${introPage.bgFileName}`, introPage.bgSrc.split(',')[1], { base64: true });
+            }
+            if (introPage.titleSrc && introPage.titleSrc.startsWith('data:image')) {
+              newZip.file(`images/${introPage.titleFileName}`, introPage.titleSrc.split(',')[1], { base64: true });
+            }
+
         } else {
             const exportGlobalData = globalData;
             // 💡 [수정 5] 문장(eng)이 전부 비어있으면 말풍선 데이터 자체를 null로 내보내
@@ -2272,7 +2412,7 @@ export default function App() {
         // contentType 구분 없이 pageData(씬/대화 배열)를 그대로 매핑해서, roleplay_b에서 씬이 여러 개면
         // view_pageinfo가 씬 개수만큼 부풀려졌고, 그 결과 마스터 템플릿이 "여러 페이지가 있다"고 오인해
         // 불필요한 페이지 이동 네비게이션 바(.nav-html)를 그려버렸다.
-        const viewPageInfoData = (contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c')
+        const viewPageInfoData = (contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c' || contentType === 'intro')
           ? [{ url: "view01.html" }]
           : (pageData || []).map(data => ({ url: `view${data.view}.html` }));
         const viewPageInfoContent = `const view_pageinfo = ${JSON.stringify(viewPageInfoData, null, 2)};\n`;
@@ -2296,7 +2436,7 @@ export default function App() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = contentType === 'roleplay_a' ? 'roleplay(A)_content.zip' : (contentType === 'roleplay_b' ? 'roleplay(B)_content.zip' : (contentType === 'roleplay_c' ? 'roleplay(C)_content.zip' : 'understand_content.zip'));
+        a.download = contentType === 'roleplay_a' ? 'roleplay(A)_content.zip' : (contentType === 'roleplay_b' ? 'roleplay(B)_content.zip' : (contentType === 'roleplay_c' ? 'roleplay(C)_content.zip' : (contentType === 'intro' ? 'intro_content.zip' : 'understand_content.zip')));
         a.click();
         URL.revokeObjectURL(url);
         showToast("✅ 완벽한 구조의 ZIP 패키지 추출이 완료되었습니다!");
@@ -2367,13 +2507,14 @@ export default function App() {
             <h2 className="text-2xl font-bold mb-2 text-red-600 flex items-center gap-2">🛠️ 원본 마스터 ZIP 라이브러리 (교과서 제작 핵심 소스 관리)</h2>
             <p className="text-gray-500 text-sm mb-8">업로드한 ZIP 파일은 브라우저 DB에 영구 저장되므로 매번 올릴 필요가 없습니다. 여기에 등재되는 ZIP 원본들은 기획자들이 제공하는 최종 UI 번들 뼈대입니다. 추출 버튼을 눌렀을 때 엔진이 이 ZIP을 껍데기 삼아 내부의 `data.js`만 동적으로 치환 조립하여 새로운 교과서 노드를 배포해 냅니다.</p>
             
-            <div className="grid grid-cols-4 gap-6">
-              {['understand', 'roleplay_a', 'roleplay_b', 'roleplay_c'].map((type) => {
+            <div className="grid grid-cols-5 gap-6">
+              {['understand', 'roleplay_a', 'roleplay_b', 'roleplay_c', 'intro'].map((type) => {
                 const meta = {
                   understand: { badge: 'U', badgeClass: 'bg-blue-100 text-blue-600', title: 'Understand 유형', desc: '말풍선 이해도 향상 코믹 콘텐츠용 마스터 소스', btnClass: 'bg-blue-600 hover:bg-blue-700' },
                   roleplay_a: { badge: 'RA', badgeClass: 'bg-purple-100 text-purple-600', title: 'Roleplay(A) 유형', desc: '역할극 대화형 콘텐츠(예: talk and complete)의 마스터 소스', btnClass: 'bg-purple-600 hover:bg-purple-700' },
                   roleplay_b: { badge: 'RB', badgeClass: 'bg-teal-100 text-teal-600', title: 'Roleplay(B) 유형', desc: '표 퀴즈를 전면 비활성화한 씬 기반 다중 장면극 마스터 소스', btnClass: 'bg-teal-600 hover:bg-teal-700' },
                   roleplay_c: { badge: 'RC', badgeClass: 'bg-fuchsia-100 text-fuchsia-600', title: 'Roleplay(C) 유형', desc: '표 퀴즈 대신 여러 대화 갈래(페이지)를 넘겨보는 분기형 대화 마스터 소스', btnClass: 'bg-fuchsia-600 hover:bg-fuchsia-700' },
+                  intro: { badge: 'IN', badgeClass: 'bg-pink-100 text-pink-600', title: 'Intro 유형', desc: '레슨 시작 표지(배경+타이틀 이미지, 학습목표) 단일 화면 마스터 소스', btnClass: 'bg-pink-600 hover:bg-pink-700' },
                 }[type];
                 return (
                 <div key={type} className="border border-gray-200 rounded-xl p-5 bg-gray-50 flex flex-col items-center justify-between text-center relative hover:border-gray-300 transition shadow-sm">
@@ -2626,7 +2767,9 @@ export default function App() {
             <div className="flex-1 relative flex items-center justify-center overflow-hidden p-4" ref={wrapperRef}>
                <div ref={containerRef} className="bg-white shadow-2xl relative border border-gray-200 select-none" style={{ width: 1280, height: 720, transform: `scale(${scale})`, transformOrigin: 'center center', flexShrink: 0, overflow: 'hidden' }}>
                  
-                 {/* 헤더 발문 영역 */}
+                 {/* 헤더 발문 영역 — 인트로 유형은 마스터 템플릿(view01.html)에 이 act-title 헤더 자체가
+                     없으므로(배경/타이틀 이미지/학습목표 박스뿐인 단일 화면) 렌더하지 않는다. */}
+                 {contentType !== 'intro' && (
                  <div className="absolute top-[27px] w-full px-[37px] flex flex-col items-start pointer-events-none z-10">
                    <div className="flex items-center gap-2 pointer-events-auto">
                      <div style={{ position: 'relative', height: 35, display: 'flex', justifyContent: 'center', alignItems: 'center', fontFamily: 'sans-serif', fontSize: 20, padding: '0 5px', color: contentType === 'understand' ? '#2f964e' : '#09769d', borderTop: `solid 3.5px ${contentType === 'understand' ? '#d3ea95' : '#c9e6f4'}`, borderBottom: `solid 3.5px ${contentType === 'understand' ? '#d3ea95' : '#c9e6f4'}` }}>
@@ -2651,7 +2794,8 @@ export default function App() {
                      )}
                    </div>
                  </div>
- 
+                 )}
+
                  {/* 1. Understand 모드 캔버스 */}
                  {contentType === 'understand' && (
                    <>
@@ -2785,6 +2929,31 @@ export default function App() {
                    </>
                 )}
  
+                 {/* 🏁 인트로 모드 캔버스 — 마스터 템플릿(view01.html)과 동일하게 배경 이미지(전체 화면,
+                     늘림) + 타이틀 이미지(좌상단) + 학습목표 박스(좌하단) 3개 요소뿐인 단일 화면. */}
+                 {contentType === 'intro' && (
+                   <>
+                     <img src={activeData.bgSrc || introPlaceholderBg} alt="배경" className="absolute inset-0 w-full h-full object-fill" style={{ zIndex: 1 }} />
+                     {/* 💡 드래그로 위치 이동(handleMouseDown/Move가 x,y를 titleX/titleY에 반영), 너비는
+                         우측 패널의 숫자 입력으로 조정(높이는 원본 비율 유지 자동) */}
+                     <div
+                       onMouseDown={(e) => handleMouseDown(e, INTRO_TITLE_DRAG_ID)}
+                       style={{ position: 'absolute', top: activeData.titleY ?? 20, left: activeData.titleX ?? 50, width: activeData.titleWidth ?? 460, zIndex: 2 }}
+                       className={`cursor-move ${draggingBoxId === INTRO_TITLE_DRAG_ID ? 'ring-4 ring-emerald-500' : ''}`}
+                     >
+                       <img src={activeData.titleSrc || introPlaceholderTitle} alt="타이틀" style={{ width: '100%', display: 'block', pointerEvents: 'none' }} />
+                     </div>
+                     <div style={{ position: 'absolute', left: 40, bottom: 75, minWidth: 410, maxWidth: 1200, minHeight: 100, borderRadius: 25, backgroundColor: '#fdf6fa', border: `3.5px solid ${activeData.learningObjectiveColor || '#f1d9ed'}`, boxShadow: '2px 2px 5px rgba(0,0,0,0.25)', zIndex: 3 }}>
+                       <div style={{ position: 'absolute', margin: '15px 0 0 15px', minWidth: 150, height: 44, borderRadius: 25, fontFamily: 'sans-serif', fontSize: 26, fontWeight: 'bold', color: '#fff', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '0 10px', backgroundColor: activeData.learningObjectiveColor || '#b13f98' }}>
+                         {activeData.learningObjectiveTitle || '학습 목표'}
+                       </div>
+                       <div style={{ position: 'relative', minWidth: 725, padding: '80px 55px 30px 25px', fontFamily: 'sans-serif', fontSize: 25, color: '#333', whiteSpace: 'pre-wrap' }}>
+                         {activeData.learningObjective || <span style={{ color: '#bbb' }}>우측 패널에서 학습 목표 내용을 입력하세요.</span>}
+                       </div>
+                     </div>
+                   </>
+                 )}
+
                  {/* 🗣️ 롤플레이 뷰어 (A형 및 B형 분기 렌더링) */}
                  {(contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') && (
                      <div style={{ position: 'relative', width: '100%', height: '100%', paddingTop: '100px' }}>
@@ -3085,19 +3254,88 @@ export default function App() {
           {/* 우측 속성 제어 사이드바 */}
           <div className="w-[430px] bg-white flex flex-col h-full shadow-[-4px_0_15px_rgba(0,0,0,0.1)] border-l border-gray-200 z-40 shrink-0">
             <div className="p-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
-              <h2 className="text-lg font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${resolveTypeDisplayName()})` : `(View ${activeData.view})`}</span></h2>
+              <h2 className="text-lg font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${resolveTypeDisplayName()})` : contentType === 'intro' ? '(Intro)' : `(View ${activeData.view})`}</span></h2>
             </div>
             
             <div className="flex border-b border-gray-200 shrink-0">
-              <button onClick={() => setActiveTab('view')} className={`flex-1 py-3 text-sm font-bold transition ${activeTab === 'view' ? 'border-b-2 border-emerald-500 text-emerald-700 bg-white' : 'text-gray-500 hover:bg-gray-50'}`}>🔘 {contentType === 'understand' ? 'View 개별 속성' : contentType === 'roleplay_b' ? '장면 대본 편집' : '대본/퀴즈 편집'}</button>
-              <button onClick={() => setActiveTab('global')} className={`flex-1 py-3 text-sm font-bold transition ${activeTab === 'global' ? 'border-b-2 border-emerald-500 text-emerald-700 bg-white' : 'text-gray-500 hover:bg-gray-50'}`}>🌐 공통 설정 (전체)</button>
+              <button onClick={() => setActiveTab('view')} className={`flex-1 py-3 text-sm font-bold transition ${activeTab === 'view' ? 'border-b-2 border-emerald-500 text-emerald-700 bg-white' : 'text-gray-500 hover:bg-gray-50'}`}>🔘 {contentType === 'understand' ? 'View 개별 속성' : contentType === 'roleplay_b' ? '장면 대본 편집' : contentType === 'intro' ? '학습목표/이미지 편집' : '대본/퀴즈 편집'}</button>
+              {/* 💡 [인트로 전용] 헤더/영상/How to play 등 "공통 설정" 탭에 있던 항목이 이 유형엔 없어서
+                  (view01.html에 해당 요소 자체가 없음) 탭을 아예 숨긴다 — 모든 필드는 위 탭 하나에 있다. */}
+              {contentType !== 'intro' && (
+                <button onClick={() => setActiveTab('global')} className={`flex-1 py-3 text-sm font-bold transition ${activeTab === 'global' ? 'border-b-2 border-emerald-500 text-emerald-700 bg-white' : 'text-gray-500 hover:bg-gray-50'}`}>🌐 공통 설정 (전체)</button>
+              )}
             </div>
  
             <div className="p-5 flex-1 overflow-y-auto space-y-6 font-sans">
               
               {activeTab === 'view' ? (
                 <div className="space-y-6 animate-none">
-                  
+
+                  {/* 🏁 인트로 모드 편집 패널 — 배경/타이틀 이미지 업로드, 학습목표(라벨/색상/내용),
+                      타이틀 오디오 ID, 배경 이미지 접근성 텍스트. 페이지/씬 개념이 없어 이 한 화면에
+                      모든 필드가 있다("공통 설정" 탭 자체를 숨겼다 — 위 탭 바 참고). */}
+                  {contentType === 'intro' && (
+                    <>
+                      <section className="bg-pink-50 rounded-xl p-4 border border-pink-100">
+                        <h3 className="font-bold text-sm text-pink-800 mb-2 flex items-center gap-1"><span>🖼️</span> 배경 이미지</h3>
+                        <input type="file" accept="image/*" onChange={e => handleIntroImageUpload(e, 'bg')} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-pink-100 file:text-pink-700 hover:file:bg-pink-200 cursor-pointer" />
+                        <p className="text-[11px] text-gray-400 mt-2">{activeData.bgFileName ? `업로드됨: ${activeData.bgFileName}` : '⚠️ 아직 예시 이미지입니다 — 업로드 전까지는 ZIP 추출이 되지 않습니다.'}</p>
+                        <div className="pt-3 mt-3 border-t border-pink-200">
+                          <label className="block text-pink-800 text-[11px] font-bold mb-1">배경 이미지 대체 텍스트 (mainImageAriaLabel)</label>
+                          <textarea value={activeData.mainImageAriaLabel || ''} onChange={e => updateViewProp('mainImageAriaLabel', e.target.value)} rows={3} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" placeholder="시각장애인용 배경 이미지 설명 (AI 자동 생성, 수정 가능)" />
+                        </div>
+                      </section>
+
+                      <section className="bg-pink-50 rounded-xl p-4 border border-pink-100">
+                        <h3 className="font-bold text-sm text-pink-800 mb-2 flex items-center gap-1"><span>🏷️</span> 타이틀 이미지</h3>
+                        <input type="file" accept="image/*" onChange={e => handleIntroImageUpload(e, 'title')} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-pink-100 file:text-pink-700 hover:file:bg-pink-200 cursor-pointer" />
+                        <p className="text-[11px] text-gray-400 mt-2">{activeData.titleFileName ? `업로드됨: ${activeData.titleFileName}` : '⚠️ 아직 예시 이미지입니다 — 업로드 전까지는 ZIP 추출이 되지 않습니다.'}</p>
+                        <div className="pt-3 mt-3 border-t border-pink-200">
+                          <label className="block text-pink-800 text-[11px] font-bold mb-1">타이틀 오디오 ID (titleAudioId)</label>
+                          <input type="text" value={activeData.titleAudioId || ''} onChange={e => updateViewProp('titleAudioId', e.target.value)} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" placeholder="예: L1_010_Lesson1" />
+                        </div>
+                        {/* 💡 [신규] 위치는 캔버스에서 드래그로도 옮길 수 있고, 여기 숫자 입력으로 정밀 조정도
+                            가능하다(둘이 같은 값을 공유). 높이는 원본 이미지 비율을 유지해 자동 계산되므로
+                            너비(width)만 조정 대상이다. */}
+                        <div className="pt-3 mt-3 border-t border-pink-200 grid grid-cols-3 gap-2">
+                          <div>
+                            <label className="block text-pink-800 text-[11px] font-bold mb-1">X 좌표</label>
+                            <input type="number" value={activeData.titleX ?? 50} onChange={e => updateViewProp('titleX', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
+                          </div>
+                          <div>
+                            <label className="block text-pink-800 text-[11px] font-bold mb-1">Y 좌표</label>
+                            <input type="number" value={activeData.titleY ?? 20} onChange={e => updateViewProp('titleY', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
+                          </div>
+                          <div>
+                            <label className="block text-pink-800 text-[11px] font-bold mb-1">너비 (W)</label>
+                            <input type="number" value={activeData.titleWidth ?? 460} onChange={e => updateViewProp('titleWidth', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-gray-400 mt-2">💡 캔버스에서 타이틀 이미지를 직접 드래그해도 위치가 바뀝니다. 높이는 원본 비율대로 자동 조정됩니다.</p>
+                      </section>
+
+                      <section className="bg-white rounded-xl p-4 border border-gray-200">
+                        <h3 className="font-bold text-sm text-gray-700 mb-2 flex items-center gap-1"><span>🎯</span> 학습 목표 박스</h3>
+                        <div className="mb-3">
+                          <label className="block text-gray-500 text-xs mb-1">라벨 텍스트 (learningObjectiveTitle)</label>
+                          <input type="text" value={activeData.learningObjectiveTitle || ''} onChange={e => updateViewProp('learningObjectiveTitle', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="학습 목표" />
+                        </div>
+                        <div className="mb-3">
+                          {/* 💡 [수정] 다른 유형(Understand 말풍선 bg_color/border_color)과 동일하게 색상
+                              스와치 + HEX 텍스트 입력을 페어로 제공 — 마우스로 고르거나 HEX를 직접
+                              입력하거나 둘 다 가능하다. */}
+                          <label className="block text-gray-500 text-xs mb-1">메인 색상 (learningObjectiveColor)</label>
+                          <div className="flex items-center border border-gray-300 rounded-lg overflow-hidden">
+                            <input type="color" value={activeData.learningObjectiveColor || '#eb1e79'} onChange={e => updateViewProp('learningObjectiveColor', e.target.value)} className="w-10 h-9 p-0 border-0 cursor-pointer shrink-0" />
+                            <input type="text" value={activeData.learningObjectiveColor || '#eb1e79'} onChange={e => updateViewProp('learningObjectiveColor', e.target.value)} className="w-full text-xs p-2 bg-white outline-none" placeholder="#eb1e79" />
+                          </div>
+                        </div>
+                        <label className="block text-gray-500 text-xs mb-1">학습 목표 내용 (learningObjective)</label>
+                        <textarea value={activeData.learningObjective || ''} onChange={e => updateViewProp('learningObjective', e.target.value)} rows={5} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" placeholder={'1단원의 학습 내용을 확인하고 학습 계획을 세워봅시다.\n(줄바꿈으로 여러 줄 입력 가능)'} />
+                      </section>
+                    </>
+                  )}
+
                   {/* Understand 모드 개별 컷 에디터 */}
                   {contentType === 'understand' && (
                     <>

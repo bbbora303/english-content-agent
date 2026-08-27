@@ -21,13 +21,14 @@
 - 좌표/텍스트를 캔버스에서 직접 조정할 수 있는 WYSIWYG(비슷한) 편집 환경 제공
 - 완성된 콘텐츠를 마스터 템플릿과 병합해 즉시 배포 가능한 ZIP으로 추출
 
-### 콘텐츠 타입 3종 (현재 지원)
+### 콘텐츠 타입 4종 (현재 지원)
 1. **`understand`**: 만화 컷(보통 4컷) + 말풍선. 말풍선 텍스트 렌더링 방식이 다시 3가지로 나뉨:
    - `inline`: 짧은 문장들이 한 줄로 이어짐 (한 줄에 다 들어감)
    - `lines`: 문장 1개가 길어서 여러 줄로 줄바꿈됨 (오디오 1개, 작성 시점에 줄이 미리 나뉘어 있음 — `lines` 배열)
    - `zipper`: 문장 여러 개(각각 별도 오디오)가 문장 경계와 무관하게 자연스럽게 흐르며 줄바꿈됨
 2. **`roleplay`** (롤플레이 A형): 대화(dialogues) + 표 퀴즈(Table Quiz)
 3. **`roleplay_b`** (롤플레이 B형): 씬(scene) 여러 개, 각 씬마다 이미지+대화, 표 퀴즈 없음
+4. **`intro`** (레슨 인트로 표지, 신규): 페이지/씬 개념 없는 단일 화면. 배경 이미지 + 타이틀 이미지(위치·너비 조정 가능) + 학습목표 박스(라벨/색상/내용)로만 구성. 배경·타이틀 이미지는 항상 사용자가 직접 업로드(자동 크롭 없음), 업로드 전까지는 캔버스 미리보기 전용 플레이스홀더 예시 이미지로 채워짐(2-36 참고).
 
 ### 기술 스택
 
@@ -277,6 +278,65 @@ npm run dev:all               # 프론트(5173) + 서버(3001) 동시 실행
 - **결정**: 이 전제를 코드에도 반영 — (1) `startEditing()`의 roleplay_b 폴백 분기(단일 뷰만 인식됐거나 AI 분석을 안 거친 경우)에서 씬 1에만 채워 넣던 대사(`extractedDialogues` 또는 기본 예시)를 4개 폴백 씬 전부에 동일하게 복제해서 채우도록 수정. (2) `addSceneB()`로 씬을 추가할 때 빈 대사(`{ sentence: "", kor: "" }`)로 시작하던 것을, 항상 현재 씬 1(`pageData[0]`)의 대사를 복제해서 시작하도록 수정. 두 경우 모두 배열/객체를 얕은 복제해서 씬마다 독립적으로 편집 가능하게 함(한 씬 수정이 다른 씬에 번지지 않음).
 - **검증**: Playwright로 다중 선택지형 시나리오(tips 2개, view 1개)를 재현 — 초기 진입 시 폴백 씬 4개 + "+ 씬 추가"로 만든 5번째 씬까지 전부 씬 1과 동일한 대사(`"I'm thinking of running this weekend."` / `"That sounds good. Which do you prefer?"`)로 채워지는 것을 스크린샷과 textarea 값 비교로 확인함. 콘솔 에러 0건.
 
+### 2-33. Understand 말풍선에 "꼬리 없음"(`tail_dir: "none"`) 지원 추가 — AI 자동 판정 + 수동 삭제, 마스터 템플릿 반영까지 완료
+- **배경**: 사용자가 실제 교과서 지면(예: "Later, a toy company began to make flying discs." / "Now, playing with them is a popular sport.")에서 캐릭터를 향한 뾰족한 꼬리 없이 사각형 캡션·내레이션 박스로만 되어 있는 말풍선을 발견 — 기존 저작 도구는 모든 말풍선에 항상 꼬리(SVG 포인터)가 있다고 가정하고 있어 이런 형태를 표현할 방법이 없었음.
+- **결정**: `bubble.tail_dir`에 기존 `"top"/"bottom"/"left"/"right"` 외에 `"none"` 값을 추가로 지원.
+  - **AI 프롬프트**(`lib/analyzePrompt.js`): 말풍선마다 꼬리 유무를 판정해 `has_tail: true/false`로 추출하도록 지시 추가(사각형/둥근 사각형 박스로만 되어 있으면 false), 캡션 박스 예시(has_tail:false) 1건을 JSON 예시에 추가.
+  - **App.jsx**: `analyzeImageWithAI`가 `has_tail`을 `hasTail`로 저장 → `startEditing()`에서 `cb.hasTail === false`면 그 말풍선의 `tail_dir`을 자동으로 `'none'`으로 세팅. 캔버스 렌더링에서 `tail_dir === 'none'`이면 꼬리 SVG 자체를 그리지 않도록 조건부 렌더링. 꼬리 방향 드롭다운에 "없음(꼬리 삭제)" 옵션을 추가해 AI가 놓쳤거나 사용자가 원할 때 수동으로도 꼬리를 지울 수 있게 함(이때 꼬리 위치/끝방향 입력란은 비활성화). ZIP export는 `tail_dir`을 그대로 통과시키므로 추가 수정 불필요.
+- **마스터 템플릿 반영**: `docs/understand_bubble_no_tail_master_template_prompt.md` 작성해 이관 → 사용자가 실제 `view01.js`(꼬리 SVG를 `hasTail` 조건부로 생성)와 `data.js`(검증용 테스트 데이터)를 수정해서 받아옴. 요청 내용과 정확히 일치하며 기존 꼬리 있는 말풍선 렌더링에 회귀가 없음을 확인 — **코드 수정 없이 검증만 수행**.
+- **검증**: Playwright로 AI가 `has_tail:false`로 판정한 말풍선은 꼬리 SVG가 0개, 일반 말풍선은 1개 렌더링되는 것을 확인. 드롭다운에서 "없음"을 수동 선택하면 실시간으로 꼬리가 사라지고 위치/끝방향 입력란이 비활성화되는 것도 확인. 콘솔 에러 0건.
+
+### 2-34. Roleplay A/B/C형 공통 [How to play] 안내 문구를 "공통 설정" 탭에서 편집 가능하게 함
+- **배경**: 사용자가 [How to play] 버튼을 눌렀을 때 나오는 4단계 안내 문구를 콘텐츠(레슨)마다 다르게 쓰고 싶었는데, 그 문구가 `handleExportZip` 안에 A/B/C형별로 각각 하드코딩되어 있어(A/C는 `howToPlay: [{step, tail, lines}]`, B는 `howToPlaySteps: [{step, text}]`로 필드 구조까지 다름) UI에서 수정할 방법이 전혀 없었음.
+- **결정**: 콘텐츠(현재 작업 중인 프로젝트) 단위로 자유롭게 고쳐 쓸 수 있는 편집 UI를 "공통 설정" 탭에 신설. 페이지/씬 단위가 아니라 콘텐츠 전체에 1세트만 있으면 되는 것으로 확인(사용자: "콘텐츠별로 안내 문구가 다른 상황").
+  - `HOWTOPLAY_DEFAULT_LINES`(유형별 4단계 기본 문구, 기존 하드코딩 값 그대로)와 `howToPlayLines` state 신설. 콘텐츠 유형이 A/B/C 사이에서 바뀌면(1단계 AI 판정 또는 "유형 변경" 기능) 그 유형의 기본값으로 자동 리셋됨.
+  - "공통 설정" 탭에 STEP 1~4 textarea 편집 섹션 추가(roleplay 유형일 때만 노출, understand는 이 버튼 자체가 없어 숨김). 줄바꿈(Enter)으로 한 스텝 안에 여러 줄을 구분.
+  - A/C의 꼬리 방향(`tail`)은 사용자가 편집할 대상이 아니라 위치 지정용 고정값이라, 문구 state와 분리해 `HOWTOPLAY_TAILS_AC` 상수로 별도 관리.
+  - `handleExportZip`의 A/B/C 세 분기 모두 하드코딩된 배열 대신 편집된 `howToPlayLines`를 매핑해서 내보내도록 교체.
+- **버그 발견 및 수정 (같은 날)**: 1차 구현에서 textarea에 Enter를 눌러도 줄바꿈이 안 되는 문제가 실사용 중 발견됨. 원인은 `updateHowToPlayLine`이 값이 바뀔 때마다 "끝에 남은 빈 줄"을 즉시 정리하는 로직을 갖고 있었는데, controlled 컴포넌트라 리렌더 시점에 방금 입력한 Enter(개행)까지 함께 지워버렸던 것. **수정**: 입력 중에는 빈 줄을 정리하지 않고 그대로 저장하고, 트레일링 빈 줄 정리는 `cleanHowToPlaySteps()` 함수로 분리해 실제 export 시점에만 적용하도록 변경.
+- **저장 범위**: 이 문구는 IndexedDB나 별도 저장소에 영구 저장되지 않고 세션 state로만 유지됨 — 새로고침하면 유형의 기본값으로 되돌아감(필요 시 이후 localStorage 등으로 영속화 검토 가능, 아직 요청되지 않음).
+- **검증**: Playwright로 (1) roleplay_a에서 편집 섹션이 뜨고 기본 문구가 정확히 표시되는지, (2) textarea 수정이 실시간으로 반영되는지, (3) 실제 키보드 Enter 입력(`page.keyboard.press('Enter')`)으로 줄바꿈이 정상 작동하는지 확인. `npx vite build` 정상 통과, 콘솔 에러 0건.
+
+### 2-35. Understand 이전/다음 컷 네비게이션 썸네일은 별도 이미지 파일이 아니라 인접 view의 메인 이미지(`image.png`)를 재사용함 — 마스터 템플릿(view01.js) 코드로 확정
+- **배경**: 사용자가 "understand 메인 이미지가 컷마다 고정 파일명(`image.png`)으로 export되는 것"(2-14)을 확인하는 과정에서, 캔버스 좌우에 보이는 이전/다음 컷 썸네일(2-12에서 신규 구현)도 별도 이미지 파일로 저장되고 있는지 문의함.
+- **1차 확인(저작 도구 코드만)**: `App.jsx`의 이전/다음 컷 `<img>`가 `pageData[activeViewIdx - 1]?.bgSrc` / `pageData[activeViewIdx + 1]?.bgSrc`를 그대로 재사용(파스텔 필터만 적용)하는 것을 확인 — 별도 파일/필드 없이 인접 view 자신의 배경 이미지를 재사용하는 구조. 다만 이것이 실제 마스터 템플릿과 일치하는지는 이 시점엔 추정이었음.
+- **최종 확정(마스터 템플릿 코드 확인)**: 사용자가 제공한 실제 `view01.js`의 `ContentRenderer.init()` 8번 섹션에서, `customPrevImgBtn`/`customNextImgBtn`의 `background-image`를 `PAGE_DATA[navIndex - 1].image_url` / `PAGE_DATA[navIndex + 1].image_url`로 그대로 채우는 것을 확인함:
+  ```js
+  if (customPrevImgBtn && this.navIndex > 0) {
+      const prevImageUrl = PAGE_DATA[this.navIndex - 1].image_url;
+      customPrevImgBtn.style.backgroundImage = `url('${prevImageUrl}')`;
+  }
+  if (customNextImgBtn && this.navIndex < PAGE_DATA.length - 1) {
+      const nextImageUrl = PAGE_DATA[this.navIndex + 1].image_url;
+      customNextImgBtn.style.backgroundImage = `url('${nextImageUrl}')`;
+  }
+  ```
+  즉 마스터 템플릿에도 썸네일 전용 필드나 파일이 존재하지 않으며, 저작 도구(App.jsx)의 기존 구현이 마스터 템플릿과 정확히 일치함이 검증됨(5-6 원칙에 따라 "추정"에서 "확정"으로 전환된 사례).
+- **결론**: App.jsx 코드 수정 불필요. `handleExportZip`도 컷마다 `bgSrc`를 `images/view0X/image.png`로만 내보내면 충분하며, 썸네일용 추가 파일을 만들 필요가 없음이 재확인됨.
+
+### 2-36. Intro 유형(레슨 인트로 표지) 신규 추가
+- **배경**: 인트로 유형의 마스터 템플릿(`index.html`, `view01.html`, `view01.css`, `data.js`)을 전달받아 검토 — understand/roleplay 계열과 달리 페이지/씬 개념이 아예 없는 단일 화면(배경 이미지 + 타이틀 이미지 + 학습목표 박스)임을 확인.
+- **데이터 구조 확정**: `contentData` 스키마 — `learningObjectiveTitle`(라벨 텍스트), `learningObjectiveColor`(HEX, 라벨 배경색+박스 테두리색 겸용), `learningObjective`(HTML 문단), `titleAudioId`, `mainImageAriaLabel`(배경 이미지 접근성 설명), `bgImagePath`/`titleImagePath`(둘 다 `images/` 폴더 바로 아래, 다른 유형의 `images/view0X/`와 달리 하위 폴더 없음), `animationConfig`(CreateJS 인트로 애니메이션 경로 — 아래 참고).
+- **AI 분석 범위를 의도적으로 좁힘(사용자 확정)**: AI는 `mainColor`(HEX, 레슨 번호/제목 그래픽의 메인 강조색)와 `mainImageAriaLabel` 딱 2개만 추출. 학습목표 문단 텍스트는 지면에 보여도 추출하지 않고 작업자가 직접 입력(2-19의 "씬 이미지 수동 업로드" 결정과 같은 맥락 — 신뢰도 낮은 자동 추출보다 수동 입력이 안전하다고 판단).
+- **이미지는 항상 수동 업로드, 자동 크롭 없음**: 배경/타이틀 이미지 둘 다 사용자가 직접 업로드해야 하며, 업로드 전에는 실제 예시 이미지(사용자가 제공한 표지 샘플)를 **캔버스 미리보기 전용 플레이스홀더**로 보여줌. `bgFileName`/`titleFileName`이 비어 있으면(미업로드) `handleExportZip`이 export 자체를 차단하고 토스트로 안내 — 플레이스홀더가 실수로 실제 콘텐츠에 섞여 나가는 사고를 방지.
+- **CreateJS 인트로 애니메이션(`animationConfig`)은 저작 도구가 다루지 않기로 확정**: `view01.js`에 관련 클래스(`Ei`)가 있지만 실제 호출부가 주석 처리되어 있어 죽은 코드로 확인됨 — 저작 도구는 고정값만 내보내고 편집 UI를 만들지 않음.
+- **view_pageinfo 처리**: roleplay 계열과 동일하게 intro도 항상 `view01.html` 1개 페이지로 고정(페이지/씬이 여러 개인 유형이 아니므로).
+- **관리자 모드**: `templates` 상태와 마스터 ZIP 업로드 그리드에 `intro` 슬롯 추가(4열 → 5열).
+
+### 2-37. Intro AI 분류가 계속 understand로 오분류되는 버그 수정
+- **문제**: intro 판정 규칙을 `lib/analyzePrompt.js`에 추가할 때 실수로 "1." 다음에 "0."을 붙여 규칙 번호가 1→0→2 순으로 꼬여 있었음. 번호가 비정상적으로 뒤섞인 목록이라 모델이 이 규칙을 "가장 먼저 확인해야 할 최우선 조건"으로 제대로 인식하지 못하고, 다른 규칙(understand 쪽)에 더 끌려가 오분류가 발생한 것으로 추정.
+- **수정**: 번호를 1→2→3... 순으로 정상화하고, intro 판정 문구를 1번 규칙 안에 "다른 어떤 판정보다 우선 확인"이라는 문장과 함께 명확히 통합. 판정 기준도 "말풍선/대화문/표 퀴즈/교체 표현 영역이 지면에 존재하는가?" 하나로 단순화.
+- **방어적 파싱 추가(App.jsx)**: `analyzeImageWithAI`의 `rawType` 계산 시 `aiData.contentType`을 `trim()`+`toLowerCase()`로 정규화한 뒤 비교하도록 수정 — AI가 대소문자/공백을 다르게 반환해도(`"Intro"`, `" intro "` 등) understand로 잘못 폴백하지 않게 함.
+
+### 2-38. Intro 메인 색상 입력 UI를 다른 유형과 동일한 패턴으로 통일
+- **결정**: 학습목표 박스의 `learningObjectiveColor` 입력을 색상 스와치(`<input type="color">`) 단독에서, Understand 말풍선의 `bg_color`/`border_color`와 동일한 "색상 스와치 + HEX 텍스트 입력" 페어 UI로 교체. 마우스로 고르거나 HEX를 직접 입력하거나 둘 다 가능.
+- **이유**: 이미 다른 유형에 있던 확립된 패턴을 그대로 재사용해 UI 일관성을 맞춤 — 별도의 새 상호작용을 도입하지 않음.
+
+### 2-39. Intro 타이틀 이미지 위치/크기 조정 기능 추가 — 마스터 템플릿 반영까지 완료
+- **결정**: 타이틀 이미지를 캔버스에서 드래그로 이동하고(기존 말풍선 드래그 로직에 `INTRO_TITLE_DRAG_ID`로 분기 추가), 우측 패널의 X/Y/너비 숫자 입력으로 정밀 조정도 가능하게 함(드래그 값과 연동). 높이는 원본 이미지 비율을 유지해 자동 계산 — 모서리 리사이즈 핸들은 다른 어떤 유형에도 없는 패턴이라 도입하지 않고, 너비 숫자 입력만으로 크기를 조정하는 쪽으로 확정.
+- **데이터 구조**: `pageData[0]`에 `titleX`(기본 50), `titleY`(기본 20), `titleWidth`(기본 460) 추가, `handleExportZip`에서 `contentData.titleX/titleY/titleWidth`로 함께 export.
+- **마스터 템플릿 반영**: `docs/intro_title_position_master_template_prompt.md` 작성해 이관 → 사용자가 실제 `view01.html`의 `DOMContentLoaded` 스크립트에 `titleX`/`titleY`/`titleWidth`를 읽어 `#title-obj-box`의 `style.left`/`top`/`width`에 반영하는 코드(`typeof === 'number'` 체크로 구버전 데이터는 기존 고정값 유지)를 추가해서 받아옴 — 요청 내용과 정확히 일치함을 확인. **코드 수정 없이 검증만 수행**.
+
 ---
 
 ## 3. 확정된 코드
@@ -334,6 +394,10 @@ npm run dev:all               # 프론트(5173) + 서버(3001) 동시 실행
 | 상단 유형 뱃지 + 헤더 액션 버튼 | "A Understand" 뱃지, 비디오/How to play 버튼 | 원형 배지+테두리 박스 구조(2-10), 비디오 버튼은 실제 사내 CDN 에셋(`btn_video.png`, `aidtcdn-dev.aitextbook.co.kr`) 사용 — 그 CDN에 접근 안 되는 네트워크에서는 안 보일 수 있음 |
 | "내용 더 보기" 버튼 | Understand 더보기 | 정확한 좌표(`left:96.5, top:563.15`), 색상(`#ee6f00`), 실제 화살표 아이콘 에셋 사용 |
 | 이전/다음 컷 네비게이션 | Understand 컷 이동 | 신규 기능(2-12). 썸네일에 마스터 템플릿과 동일한 파스텔 필터(`opacity(0.85) contrast(0.65) brightness(1.15) grayscale(0.15)`) 적용 |
+| `handleIntroImageUpload` | Intro 배경/타이틀 이미지 업로드 | 신규 기능(2-36). FileReader로 dataURL 저장 + 파일명 sanitize해 `bgFileName`/`titleFileName`으로 저장 — 이 값이 있어야 `handleExportZip`이 "실제 업로드됨"으로 간주 |
+| `INTRO_TITLE_DRAG_ID` 분기(`handleMouseDown`/`handleMouseMove`) | Intro 타이틀 이미지 드래그 이동 | 신규 기능(2-39). 말풍선 드래그와 같은 좌표 변환 로직을 재사용하되, 대상 필드만 `bubble.x/y`가 아니라 `pageData[idx].titleX/titleY`로 분기 |
+| Intro 캔버스 렌더 블록 (배경/타이틀 이미지, 학습목표 박스) | Intro 화면 시각화 | 신규 기능(2-36). act-title 헤더는 이 유형엔 없어 `contentType !== 'intro'`로 숨김 |
+| `handleExportZip`의 intro 분기 | Intro `data.js` export + 미업로드 시 차단 가드 | 신규 기능(2-36/2-39). 배경·타이틀 파일명이 없으면(플레이스홀더 상태) export 자체를 막음 |
 
 ### 3-7. `App.jsx` 상 결정된 수치/상수 (판단 근거가 코드만 봐선 안 보이는 것들)
 - `RESIZE_THRESHOLD_BYTES = 3 * 1024 * 1024`(3MB): base64 변환 시 약 1.37배 커지는 것 감안, Vercel 4.5MB 한도에 안전 마진을 둔 값.
@@ -506,6 +570,9 @@ filter: opacity(0.85) contrast(0.65) brightness(1.15) grayscale(0.15);
 - **Roleplay B형 1차 고도화**: 언더스탠드/롤플레이 A형은 이번 작업 범위에서 "픽스"(더 이상 수정하지 않음)로 확정하고, 롤플레이 B형에 다음을 신규 구현함 — 대사 필드 스키마 통일(`speaker/sentence/kor/audio_id`), 씬 추가/삭제 UI, 씬 이미지 업로드 및 ZIP 임베드 파이프라인, AI 분석의 다중 씬 인식(장면별 이미지 크롭 + 대사 매핑), A형의 실측 기반 한글 정밀 배치 로직을 B 전용으로 이식. 상세는 7-5 참고.
 - **롤플레이 B형 마스터 템플릿(view01.js) 반영 완료**: `docs/roleplay_b_master_template_prompt.md`로 이관했던 질문 5개의 답을 실제 `view01.js`/`view01.css`로 받아 확인·반영함 — 이미지 export 경로를 `images/view01/{파일명}`으로 수정, B형 한글 배치를 (틀렸던) 실측 절대배치 로직에서 마스터 템플릿과 동일한 `.sentence-group` flex-column 방식으로 전면 교체, emp 강조색(`col-0/1/2`)이 이미 일치함을 확인하고 캔버스 미리보기에도 적용. 상세는 2-27 참고.
 - **강조 표현(emp) UX 개선 + A형 마스터 템플릿 호환성 확인 완료**: B형·A형 양쪽에 "텍스트 선택 → 색상 버튼 클릭" 방식의 emp 강조 UI를 반영(2-28)하고, 이어서 실제 A형 마스터 템플릿 파일(view01.js/css, B형과는 완전히 다른 별개 파일)을 받아 emp 3색 지원 여부를 확인함 — 이미 정확히 일치해서 추가 수정 불필요로 확정. 상세는 2-29 참고.
+- **Understand 꼬리 없는 말풍선(`tail_dir: "none"`) 지원 완료**: AI가 캡션형(꼬리 없음) 말풍선을 자동 판정하도록 프롬프트 개선, 캔버스 렌더링/수동 삭제 UI 추가, 마스터 템플릿(view01.js/data.js) 반영까지 확인 완료. 상세는 2-33 참고.
+- **Roleplay A/B/C형 How to play 안내 문구 편집 기능 완료**: 하드코딩되어 있던 4단계 안내 문구를 "공통 설정" 탭에서 콘텐츠별로 자유롭게 편집 가능하게 함. 1차 구현 직후 발견된 "Enter로 줄바꿈 안 되는" 버그도 같은 날 수정·검증 완료. 상세는 2-34 참고.
+- **Intro 유형(레슨 인트로 표지) 신규 추가 완료**: 페이지/씬 없는 단일 화면 유형을 새로 구현 — AI는 mainColor·mainImageAriaLabel만 추출(2-36), 배경/타이틀 이미지는 항상 수동 업로드(플레이스홀더 예시 이미지 + 미업로드 시 export 차단). 초기 AI 오분류(understand로 계속 판정) 버그를 프롬프트 규칙 번호 정렬로 수정(2-37). 메인 색상 입력을 다른 유형과 동일한 스와치+HEX 페어 UI로 통일(2-38). 타이틀 이미지 드래그 이동+너비 조정 기능을 추가하고 마스터 템플릿(view01.html) 반영까지 완료(2-39).
 
 ### 진행 중 / 아직 안 끝난 것
 - 없음.
