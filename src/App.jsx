@@ -261,6 +261,31 @@ function computeTableQuizColWidths(headers, staticRow) {
   return clampedWidths.map(w => (w / totalClamped) * TABLE_QUIZ_TOTAL_WIDTH);
 }
 
+// 💡 [실측 rects 줄 병합 — 버그 수정] getClientRects()는 인라인 요소 안에 중첩 인라인 요소(예:
+// 강조색 <span class='emp col-N'>)가 있으면, 같은 시각적 한 줄이어도 "텍스트 조각마다" 별도 rect를
+// 반환한다(예: "관심" 강조 시 앞부분/강조부분/뒷부분 총 3개 rect, top은 모두 동일). 이걸 그대로
+// "줄 개수"로 오인하면 실제로는 한 줄인 영어 문장인데 한글 번역을 3조각으로 쪼개 좁은 폭에 억지로
+// 끼워넣어 불필요하게 줄바꿈되는 버그가 생긴다(강조색 버튼 사용 시 한글 해석이 줄바꿈되는 현상의
+// 원인). top 값이 같은(=같은 시각적 줄) rect들을 하나로 합쳐 실제 줄 단위 너비로 되돌린다.
+function mergeRectsByVisualLine(rects) {
+  const list = Array.from(rects);
+  if (list.length === 0) return [];
+  const lines = [];
+  list.forEach(r => {
+    const existing = lines.find(l => Math.abs(l.top - r.top) < r.height / 2);
+    if (existing) {
+      existing.left = Math.min(existing.left, r.left);
+      existing.right = Math.max(existing.right, r.right);
+      existing.top = Math.min(existing.top, r.top);
+      existing.bottom = Math.max(existing.bottom, r.bottom);
+    } else {
+      lines.push({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+    }
+  });
+  lines.sort((a, b) => a.top - b.top);
+  return lines.map(l => ({ left: l.left, top: l.top, width: l.right - l.left, height: l.bottom - l.top }));
+}
+
 // 💡 [zipper 실측 분리 로직 공용화] 문장이 컨테이너 폭에 걸려 여러 줄로 꺾일 때, 그 줄 너비만큼만
 // 텍스트를 잘라서 "첫 줄"과 "나머지"로 나눈다. Understand의 placeZipperKorean() 포팅 코드와 동일한
 // 원리(숨겨진 probe 요소에 실제로 렌더링해보고 Range.getClientRects()로 줄바꿈 지점을 실측)이며,
@@ -327,14 +352,40 @@ function wrapSelectionWithEmpColor(currentValue, start, end, colorCls) {
 
 // 💡 [롤플레이 A형 빈칸 지정 전용] 마스터 템플릿(view01.html)의 buildRolePlay()는 hasBlank인 줄의
 // eng 텍스트에서 정규식 `\[(.*?)\]`로 대괄호 구간을 찾아, 빈칸 모드에서는 투명색으로, 정답 모드에서는
-// emp col-N 강조로 자동 변환한다 — 즉 이 대괄호 문법 자체가 "빈칸 지정"의 유일한 트리거다(2-28 이전
-// 방식). emp span을 직접 끼워넣는 wrapSelectionWithEmpColor와는 별개 함수로 분리해서, 사용자가
-// 텍스트를 선택해 버튼만 누르면 raw `[ ]`를 타이핑하지 않고도 빈칸 구간을 지정할 수 있게 한다.
-function wrapSelectionWithBracket(currentValue, start, end) {
-  if (start == null || end == null || start === end) return null;
+// emp col-N 강조로 자동 변환한다 — 즉 이 대괄호 문법 자체가 "빈칸 지정"의 유일한 트리거다.
+// 한 줄에는 빈칸이 하나만 존재한다는 전제이므로, 새로 선택한 구간을 감싸기 전에 기존 대괄호가
+// 있으면 먼저 제거(대괄호 문자만 벗기고 안쪽 텍스트는 보존)한 뒤 선택 위치를 그만큼 보정한다.
+// B형 강조색 버튼(wrapSelectionWithEmpColor)처럼 "텍스트 선택 → 색상 버튼 클릭" 1단계로 끝내기
+// 위해, 색상 지정과 대괄호 감싸기를 이 함수 하나에서 함께 계산해 돌려준다.
+function computeBlankColorAction(currentValue, start, end, colorIdx) {
   const text = currentValue || '';
-  if (text.slice(start, end).includes('[') || text.slice(start, end).includes(']')) return null;
-  return text.slice(0, start) + '[' + text.slice(start, end) + ']' + text.slice(end);
+  const hasSelection = start != null && end != null && start !== end;
+  const bracketMatch = text.match(/\[(.*?)\]/);
+
+  if (!hasSelection) {
+    // 새로 선택한 구간이 없으면: 이미 지정된 빈칸이 있을 때만 색상만 변경, 없으면 처리 불가(null)
+    return bracketMatch ? { blankColor: colorIdx } : null;
+  }
+
+  let plainText = text;
+  let plainStart = start;
+  let plainEnd = end;
+  if (bracketMatch) {
+    const openIdx = bracketMatch.index;
+    const closeIdx = openIdx + bracketMatch[0].length; // ']' 바로 다음 위치
+    plainText = text.slice(0, openIdx) + bracketMatch[1] + text.slice(closeIdx);
+    const shift = (pos) => (pos <= openIdx ? pos : (pos <= closeIdx ? pos - 1 : pos - 2));
+    plainStart = shift(start);
+    plainEnd = shift(end);
+  }
+
+  const wrapped = plainText.slice(0, plainStart) + '[' + plainText.slice(plainStart, plainEnd) + ']' + plainText.slice(plainEnd);
+  return { sentence: wrapped, hasBlank: true, blankColor: colorIdx };
+}
+
+// 💡 [빈칸 해제] 리터럴 대괄호를 벗기고 hasBlank를 끈다 — 껐다 켜도 "[ ]" 문자가 텍스트에 남지 않게 함.
+function stripBlankBracket(currentValue) {
+  return (currentValue || '').replace(/\[(.*?)\]/, '$1');
 }
 
 // 💡 [빈칸 강조색 미리보기 전용] 실제 export 데이터(line.sentence)에는 대괄호(`[ ]`)만 남기고,
@@ -440,6 +491,7 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isDraggingImage, setIsDraggingImage] = useState(false); // 1단계 업로드 영역 드래그 앤 드롭 하이라이트용
   const [contentType, setContentType] = useState('understand');
   // 💡 [유형 미리보기 라이트박스] 어떤 유형의 완성 화면 예시를 보여줄지 — null이면 팝업 닫힘.
   // 기존엔 boolean(showTypePreview)이라 항상 "현재 contentType"만 보여줬는데, 유형 변경
@@ -543,21 +595,18 @@ export default function App() {
     onChange(wrapped);
   };
 
-  // 💡 [롤플레이 A형 전용] 텍스트 선택 → 버튼 클릭으로 빈칸(대괄호) 구간을 지정한다.
-  const applyBracketToSelection = (textareaEl, currentValue, onChange) => {
-    if (!textareaEl) return;
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
-    if (start == null || end == null || start === end) {
+  // 💡 [롤플레이 A/C형 전용 — 사용성 개선] "텍스트 선택 → 감싸기 버튼 → 색상 버튼" 2단계였던
+  // 빈칸 지정을 B형 강조색 버튼과 동일하게 "텍스트 선택 → 색상 버튼 클릭" 1단계로 합쳤다.
+  // onFieldsChange는 { sentence?, hasBlank, blankColor } 형태의 부분 필드 객체를 한 번에 받는다.
+  const applyBlankColorAction = (textareaEl, currentValue, colorIdx, onFieldsChange) => {
+    const start = textareaEl ? textareaEl.selectionStart : null;
+    const end = textareaEl ? textareaEl.selectionEnd : null;
+    const fields = computeBlankColorAction(currentValue, start, end, colorIdx);
+    if (!fields) {
       showToast('빈칸으로 지정할 부분을 먼저 마우스로 선택해주세요.');
       return;
     }
-    const wrapped = wrapSelectionWithBracket(currentValue, start, end);
-    if (wrapped == null) {
-      showToast('선택한 구간에 이미 대괄호가 포함되어 있어요. 대괄호가 겹치지 않게 선택해주세요.');
-      return;
-    }
-    onChange(wrapped);
+    onFieldsChange(fields);
   };
 
   const loadJSZip = () => {
@@ -764,7 +813,24 @@ export default function App() {
              }
          }));
       }
- 
+
+      // 💡 [신규] "내용 더 보기" AI 자동 추출 — understand 유형에서만 의미가 있는 GLOBAL_DATA 필드라
+      // (2단계 6-1번 지시), understand로 판정됐을 때만 aiData.more_content를 반영하고, 다른 유형으로
+      // 판정되면(이전에 understand를 분석했다가 다시 분석해 다른 유형이 나온 경우 등) 이전 분석의
+      // 값이 남아있지 않도록 명시적으로 초기화한다(2-25의 extractedTips 리셋 패턴과 동일한 이유).
+      if (parsedType === 'understand') {
+        const moreContent = aiData.more_content || {};
+        setGlobalData(prev => ({
+          ...prev,
+          more_content: {
+            has_content: !!moreContent.has_content,
+            content_text: String(moreContent.content_text || '')
+          }
+        }));
+      } else {
+        setGlobalData(prev => ({ ...prev, more_content: { has_content: false, content_text: '' } }));
+      }
+
       if (parsedType === 'roleplay_a') {
           // 💡 [A형 — 기존 로직 그대로 유지] 컷 구분 없는 단일 뷰 대화 추출.
           let dials = [];
@@ -942,6 +1008,7 @@ export default function App() {
       setExtractedPagesC([]);
       setExtractedIntroColor('');
       setExtractedIntroAriaLabel('');
+      setGlobalData(prev => ({ ...prev, more_content: { has_content: false, content_text: '' } }));
     } finally {
       setIsAnalyzing(false);
     }
@@ -1241,30 +1308,44 @@ export default function App() {
   // (3MB 원본 → base64 약 4.1MB, JSON 포장 감안해도 4.5MB 안에 여유 있게 들어옵니다.)
   const RESIZE_THRESHOLD_BYTES = 3 * 1024 * 1024;
  
-  const handleImageUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        // 기준 이하 용량이면 리사이즈 없이 원본 그대로 사용
-        if (file.size <= RESIZE_THRESHOLD_BYTES) {
-          setUploadedImage(event.target.result);
-          analyzeImageWithAI(event.target.result, file.type);
-          return;
-        }
-        try {
-          const resizedDataUrl = await resizeImageForUpload(event.target.result);
-          setUploadedImage(resizedDataUrl);
-          analyzeImageWithAI(resizedDataUrl, 'image/jpeg');
-        } catch (err) {
-          // 리사이즈 실패 시(드문 경우) 원본이라도 그대로 시도
-          console.error('이미지 리사이즈 실패, 원본으로 진행:', err);
-          setUploadedImage(event.target.result);
-          analyzeImageWithAI(event.target.result, file.type);
-        }
-      };
-      reader.readAsDataURL(file);
+  // 💡 [수정] 파일 선택(input) / 드래그 앤 드롭 양쪽에서 공유하는 실제 업로드 처리 로직
+  const processUploadedImageFile = (file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('⚠️ 이미지 파일만 업로드할 수 있습니다.');
+      return;
     }
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      // 기준 이하 용량이면 리사이즈 없이 원본 그대로 사용
+      if (file.size <= RESIZE_THRESHOLD_BYTES) {
+        setUploadedImage(event.target.result);
+        analyzeImageWithAI(event.target.result, file.type);
+        return;
+      }
+      try {
+        const resizedDataUrl = await resizeImageForUpload(event.target.result);
+        setUploadedImage(resizedDataUrl);
+        analyzeImageWithAI(resizedDataUrl, 'image/jpeg');
+      } catch (err) {
+        // 리사이즈 실패 시(드문 경우) 원본이라도 그대로 시도
+        console.error('이미지 리사이즈 실패, 원본으로 진행:', err);
+        setUploadedImage(event.target.result);
+        analyzeImageWithAI(event.target.result, file.type);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleImageUpload = (e) => {
+    processUploadedImageFile(e.target.files[0]);
+  };
+
+  const handleImageDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingImage(false);
+    processUploadedImageFile(e.dataTransfer.files?.[0]);
   };
  
   const dragStart = (e, position) => { dragItem.current = position; };
@@ -1670,8 +1751,11 @@ export default function App() {
           // 💡 getBoundingClientRect()는 문장이 2줄로 꺾일 때 두 줄을 하나로 뭉뚱그린 박스를 줘서
           // 위치가 어긋난다. getClientRects()로 실제 줄마다 박스를 따로 받아, zipper처럼 한글도
           // 그만큼 나눠서 각 줄 바로 아래에 배치한다.
-          const rects = lineEl.getClientRects();
-          if (!rects || rects.length === 0) return;
+          // 💡 [버그 수정] 강조색(emp span)이 걸린 줄은 getClientRects()가 같은 줄을 여러 조각으로
+          // 쪼개서 돌려주므로, mergeRectsByVisualLine()으로 실제 시각적 줄 단위로 합친 뒤 사용한다.
+          const rawRects = lineEl.getClientRects();
+          if (!rawRects || rawRects.length === 0) return;
+          const rects = mergeRectsByVisualLine(rawRects);
 
           // 💡 마스터(view01.js placeMultiLineTranslation)와 동일한 수치로 맞춤:
           // left는 +3px 보정(TRANSLATION_LEFT_NUDGE), top은 JS의 +18px과 .translation span의
@@ -1737,8 +1821,11 @@ export default function App() {
         turnEl.querySelectorAll('.rp-line-eng').forEach((lineEl, lineIdx) => {
           const line = lines[lineIdx];
           if (!line || !line.kor) return;
-          const rects = lineEl.getClientRects();
-          if (!rects || rects.length === 0) return;
+          // 💡 [버그 수정] 강조색(emp span)이 걸린 줄은 getClientRects()가 같은 줄을 여러 조각으로
+          // 쪼개서 돌려주므로, mergeRectsByVisualLine()으로 실제 시각적 줄 단위로 합친 뒤 사용한다.
+          const rawRects = lineEl.getClientRects();
+          if (!rawRects || rawRects.length === 0) return;
+          const rects = mergeRectsByVisualLine(rawRects);
 
           let remainder = line.kor;
           for (let i = 0; i < rects.length && remainder; i++) {
@@ -1944,6 +2031,19 @@ export default function App() {
       return { ...data, dialogues: newDialogues };
   }));
 
+  // 💡 [빈칸 색상 지정 통합 액션 전용] sentence/hasBlank/blankColor를 한 번에 바꿔야 할 때(선택 →
+  // 색상 클릭 1회로 감싸기+색 지정을 동시에 처리) 여러 필드를 한 번의 setPageData로 반영한다.
+  const handleDialogueLineFieldsChange = (dialIdx, lineIdx, fields) => setPageData(prev => (prev || []).map((data, idx) => {
+      if (idx !== activeViewIdx || (contentType !== 'roleplay_a' && contentType !== 'roleplay_c')) return data;
+      const newDialogues = [...(data.dialogues || [])];
+      const turn = newDialogues[dialIdx];
+      if (!turn) return data;
+      const newLines = [...(turn.lines || [])];
+      newLines[lineIdx] = { ...newLines[lineIdx], ...fields };
+      newDialogues[dialIdx] = { ...turn, lines: newLines };
+      return { ...data, dialogues: newDialogues };
+  }));
+
   const addDialogueLine = (dialIdx) => setPageData(prev => (prev || []).map((data, idx) => {
       if (idx !== activeViewIdx || (contentType !== 'roleplay_a' && contentType !== 'roleplay_c')) return data;
       const newDialogues = [...(data.dialogues || [])];
@@ -2123,13 +2223,19 @@ export default function App() {
         const originalZip = await new window.JSZip().loadAsync(templateRecord.blob);
         const newZip = new window.JSZip();
  
+        // 💡 [빈 폴더 보존] 파일 엔트리(zipEntry.dir === false)만 옮기면, 파일이 하나라도 있는
+        // 폴더는 newZip.file()이 경로를 자동으로 만들어주므로 문제없지만, 사용자가 media/ 등의
+        // 폴더 안 파일을 전부 지워 "빈 폴더"만 남긴 경우엔 그 폴더의 존재를 알려주는 유일한
+        // 단서(디렉터리 엔트리 자체)가 통째로 걸러져 병합 결과물에서 폴더가 사라지는 문제가 있었음.
+        // → 디렉터리 엔트리도 목록에 포함시키고, 파일이 아닌 경우 newZip.folder()로 빈 폴더를
+        // 명시적으로 복원한다.
         const entries = [];
         originalZip.forEach((relativePath, zipEntry) => {
-            if (!zipEntry.dir && !relativePath.includes("__MACOSX")) {
+            if (!relativePath.includes("__MACOSX")) {
                 entries.push(zipEntry);
             }
         });
- 
+
         let rootDir = "";
         let minDepth = Infinity;
         entries.forEach(entry => {
@@ -2142,12 +2248,17 @@ export default function App() {
                 }
             }
         });
- 
+
         const filePromises = entries.map(async (entry) => {
             if (entry.name.startsWith(rootDir)) {
                 const newPath = entry.name.substring(rootDir.length);
-                const content = await entry.async('arraybuffer');
-                newZip.file(newPath, content);
+                if (!newPath) return; // 루트 폴더 엔트리 자신은 건너뜀
+                if (entry.dir) {
+                    newZip.folder(newPath);
+                } else {
+                    const content = await entry.async('arraybuffer');
+                    newZip.file(newPath, content);
+                }
             }
         });
         await Promise.all(filePromises);
@@ -2200,10 +2311,10 @@ export default function App() {
                                 lineObj.muteTargets = line.muteTargets !== undefined && String(line.muteTargets).trim() !== ""
                                     ? String(line.muteTargets).split(',').map(s => Number(s.trim()))
                                     : [0];
-                                // 💡 [빈칸 강조색] eng 안의 `[대괄호]` 구간을 정답 모드에서 몇 번 색상(emp col-N)으로
-                                // 강조할지 지정. 마스터 템플릿이 기존에 col-0로 하드코딩했던 부분을 이 값을 읽어
-                                // 쓰도록 별도 수정이 필요함(작업 프롬프트 참고) — 그 전까지는 값을 내보내기만 하고
-                                // 무시될 수 있음.
+                                // 💡 [빈칸 강조색 — 실제 view01.html 코드로 확인 완료] eng 안의 `[대괄호]` 구간을
+                                // 정답 모드에서 몇 번 색상(emp col-N)으로 강조할지 지정. 실제 buildRolePlay()가
+                                // `line.blankColor`를 그대로 읽어 "col-" + blankColor 클래스를 적용하는 것을
+                                // 확인함 — 더 이상 추정이 아니라 확정된 동작.
                                 lineObj.blankColor = Number.isInteger(line.blankColor) ? line.blankColor : 0;
                             }
 
@@ -2470,8 +2581,9 @@ export default function App() {
   };
  
   return (
+    // 💡 [수정] 상단 바(header)는 100% 크기로 유지하고, 그 아래 본문 영역만 90% 비율로 축소 표시.
     <div className="flex flex-col h-screen bg-gray-50 font-sans text-gray-800 relative">
-      
+
       {toastMsg ? (
         <div className="absolute bottom-10 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-6 py-3 rounded-full shadow-2xl z-[9999] animate-fade-in font-bold text-sm select-none">
           {String(toastMsg)}
@@ -2499,7 +2611,12 @@ export default function App() {
           <div className={`px-4 py-1 text-xs font-bold rounded-full transition-all duration-300 ${isAdminMode ? 'bg-red-500 text-white shadow-md' : 'text-emerald-300'}`}>관리자 (템플릿 관리)</div>
         </div>
       </header>
- 
+
+      {/* 💡 [수정] 본문 영역만 90% 비율로 축소. 바깥 div는 header 아래 남은 공간(flex-1)을 그대로 차지하고,
+          안쪽 div를 0.9배 축소한 뒤 width/height를 111.111%(1 / 0.9)로 키워서 축소해도 남은 공간을 꽉 채우도록 보정함. */}
+      <div className="flex-1 relative overflow-hidden">
+      <div className="flex flex-col h-full" style={{ width: '111.111%', height: '111.111%', transform: 'scale(0.9)', transformOrigin: 'top left' }}>
+
       {/* 관리자 모형 템플릿 업로드 화면 */}
       {isAdminMode && (
         <div className="flex-1 p-8 overflow-y-auto bg-gray-100 flex justify-center items-start">
@@ -2507,7 +2624,7 @@ export default function App() {
             <h2 className="text-2xl font-bold mb-2 text-red-600 flex items-center gap-2">🛠️ 원본 마스터 ZIP 라이브러리 (교과서 제작 핵심 소스 관리)</h2>
             <p className="text-gray-500 text-sm mb-8">업로드한 ZIP 파일은 브라우저 DB에 영구 저장되므로 매번 올릴 필요가 없습니다. 여기에 등재되는 ZIP 원본들은 기획자들이 제공하는 최종 UI 번들 뼈대입니다. 추출 버튼을 눌렀을 때 엔진이 이 ZIP을 껍데기 삼아 내부의 `data.js`만 동적으로 치환 조립하여 새로운 교과서 노드를 배포해 냅니다.</p>
             
-            <div className="grid grid-cols-5 gap-6">
+            <div className="flex flex-col gap-4">
               {['understand', 'roleplay_a', 'roleplay_b', 'roleplay_c', 'intro'].map((type) => {
                 const meta = {
                   understand: { badge: 'U', badgeClass: 'bg-blue-100 text-blue-600', title: 'Understand 유형', desc: '말풍선 이해도 향상 코믹 콘텐츠용 마스터 소스', btnClass: 'bg-blue-600 hover:bg-blue-700' },
@@ -2517,19 +2634,28 @@ export default function App() {
                   intro: { badge: 'IN', badgeClass: 'bg-pink-100 text-pink-600', title: 'Intro 유형', desc: '레슨 시작 표지(배경+타이틀 이미지, 학습목표) 단일 화면 마스터 소스', btnClass: 'bg-pink-600 hover:bg-pink-700' },
                 }[type];
                 return (
-                <div key={type} className="border border-gray-200 rounded-xl p-5 bg-gray-50 flex flex-col items-center justify-between text-center relative hover:border-gray-300 transition shadow-sm">
+                <div key={type} className="border border-gray-200 rounded-xl p-5 bg-gray-50 flex items-center gap-5 relative hover:border-gray-300 transition shadow-sm">
                   {templates[type] && (
                     <button onClick={() => handleTemplateDelete(type)} className="absolute top-3 right-3 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded hover:bg-red-500 hover:text-white transition">삭제</button>
                   )}
-                  <div className={`w-16 h-16 rounded-full flex items-center justify-center font-bold text-2xl mb-3 ${meta.badgeClass}`}>
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center font-bold text-2xl shrink-0 ${meta.badgeClass}`}>
                     {meta.badge}
                   </div>
-                  <h3 className="font-bold text-lg text-gray-800 mb-1">{meta.title}</h3>
-                  <p className="text-xs text-gray-400 h-8 mb-4">{meta.desc}</p>
+                  <div className="flex-1 min-w-0 text-left">
+                    <h3 className="font-bold text-lg text-gray-800">{meta.title}</h3>
+                    <p className="text-xs text-gray-400">{meta.desc}</p>
+                  </div>
 
                   <input type="file" accept=".zip" onChange={(e) => handleTemplateUpload(e, type)} className="hidden" id={`zip-${type}`} />
-                  <label htmlFor={`zip-${type}`} className={`w-full py-2 text-white text-sm font-bold rounded-lg cursor-pointer transition block ${templates[type] ? 'bg-emerald-500 hover:bg-emerald-600' : meta.btnClass}`}>
-                    {templates[type] ? `✅ ${templates[type].name.slice(0, 15)}...` : 'ZIP 마스터 템플릿 등록'}
+                  {/* 💡 [수정] 파일명 영역 가로 폭을 기존(w-56=224px) 대비 약 130%(w-[291px])로 확대,
+                      마우스오버 시 title 속성으로 전체 파일명이 브라우저 기본 툴팁으로 보이도록 함 */}
+                  <label
+                    htmlFor={`zip-${type}`}
+                    title={templates[type] ? templates[type].name : undefined}
+                    className={`w-[291px] shrink-0 py-2 text-white text-sm font-bold rounded-lg cursor-pointer transition block text-center truncate px-2 ${templates[type] ? 'bg-emerald-500 hover:bg-emerald-600' : meta.btnClass}`}
+                  >
+                    {/* 💡 [수정] 영역 폭이 130%로 늘어난 만큼 표시 글자 수도 비례해서 15자 → 20자로 확대 */}
+                    {templates[type] ? `✅ ${templates[type].name.slice(0, 20)}...` : 'ZIP 마스터 템플릿 등록'}
                   </label>
                 </div>
                 );
@@ -2547,11 +2673,16 @@ export default function App() {
             <p className="text-gray-500 text-lg mb-10">사용자가 생성하고 싶은 종이 교과서 PDF 및 이미지를 업로드하세요. AI Vision 분석 파이프라인이 텍스트, 말풍선 좌표 및 레이아웃을 자동 분할하여 최적의 인터랙티브 콘텐츠 템플릿을 추천합니다.</p>
 
             <div className="grid grid-cols-2 gap-14">
-              {/* 왼쪽 투입 */}
-              <div className="border-2 border-dashed border-gray-300 rounded-xl p-14 bg-gray-50 flex flex-col justify-center items-center text-center hover:bg-emerald-50 transition">
+              {/* 왼쪽 투입 (드래그 앤 드롭 지원) */}
+              <div
+                className={`border-2 border-dashed rounded-xl p-14 flex flex-col justify-center items-center text-center transition ${isDraggingImage ? 'border-emerald-500 bg-emerald-50' : 'border-gray-300 bg-gray-50 hover:bg-emerald-50'}`}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingImage(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingImage(false); }}
+                onDrop={handleImageDrop}
+              >
                 <span className="text-7xl mb-6">📥</span>
                 <p className="font-bold text-xl mb-3 text-gray-700">교과서 파일 업로드</p>
-                <p className="text-base text-gray-500 mb-8">PDF / PNG / JPG 등 1280x720 규격 이미지</p>
+                <p className="text-base text-gray-500 mb-8">PDF / PNG / JPG 등 1280x720 규격 이미지<br />이미지를 이 영역으로 끌어다 놓아도 됩니다</p>
 
                 <div className="space-y-2 w-full">
                   <input type="file" accept="image/*" onChange={handleImageUpload} className="block w-full text-base text-gray-500 file:mr-4 file:py-3 file:px-6 file:rounded file:border-0 file:font-semibold file:text-base file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 mx-auto cursor-pointer" />
@@ -3251,18 +3382,20 @@ export default function App() {
             </div>
           </div>
  
-          {/* 우측 속성 제어 사이드바 */}
-          <div className="w-[430px] bg-white flex flex-col h-full shadow-[-4px_0_15px_rgba(0,0,0,0.1)] border-l border-gray-200 z-40 shrink-0">
+          {/* 우측 속성 제어 사이드바 — 💡 [수정] 캔버스(flex-1):패널 비율을 기존 4:1(고정 430px)에서
+              3:2로 조정. 캔버스 쪽은 그대로 flex-1(남는 공간 전부)이라, 패널을 폭 40%(w-2/5)로
+              지정하면 남는 60%가 자동으로 캔버스 쪽 몫이 되어 3:2 비율이 나온다. */}
+          <div className="w-2/5 min-w-[560px] bg-white flex flex-col h-full shadow-[-4px_0_15px_rgba(0,0,0,0.1)] border-l border-gray-200 z-40 shrink-0">
             <div className="p-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
-              <h2 className="text-lg font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${resolveTypeDisplayName()})` : contentType === 'intro' ? '(Intro)' : `(View ${activeData.view})`}</span></h2>
+              <h2 className="text-xl font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${resolveTypeDisplayName()})` : contentType === 'intro' ? '(Intro)' : `(View ${activeData.view})`}</span></h2>
             </div>
             
             <div className="flex border-b border-gray-200 shrink-0">
-              <button onClick={() => setActiveTab('view')} className={`flex-1 py-3 text-sm font-bold transition ${activeTab === 'view' ? 'border-b-2 border-emerald-500 text-emerald-700 bg-white' : 'text-gray-500 hover:bg-gray-50'}`}>🔘 {contentType === 'understand' ? 'View 개별 속성' : contentType === 'roleplay_b' ? '장면 대본 편집' : contentType === 'intro' ? '학습목표/이미지 편집' : '대본/퀴즈 편집'}</button>
+              <button onClick={() => setActiveTab('view')} className={`flex-1 py-3 text-base font-bold transition ${activeTab === 'view' ? 'border-b-2 border-emerald-500 text-emerald-700 bg-white' : 'text-gray-500 hover:bg-gray-50'}`}>🔘 {contentType === 'understand' ? 'View 개별 속성' : contentType === 'roleplay_b' ? '장면 대본 편집' : contentType === 'intro' ? '학습목표/이미지 편집' : '대본/퀴즈 편집'}</button>
               {/* 💡 [인트로 전용] 헤더/영상/How to play 등 "공통 설정" 탭에 있던 항목이 이 유형엔 없어서
                   (view01.html에 해당 요소 자체가 없음) 탭을 아예 숨긴다 — 모든 필드는 위 탭 하나에 있다. */}
               {contentType !== 'intro' && (
-                <button onClick={() => setActiveTab('global')} className={`flex-1 py-3 text-sm font-bold transition ${activeTab === 'global' ? 'border-b-2 border-emerald-500 text-emerald-700 bg-white' : 'text-gray-500 hover:bg-gray-50'}`}>🌐 공통 설정 (전체)</button>
+                <button onClick={() => setActiveTab('global')} className={`flex-1 py-3 text-base font-bold transition ${activeTab === 'global' ? 'border-b-2 border-emerald-500 text-emerald-700 bg-white' : 'text-gray-500 hover:bg-gray-50'}`}>🌐 공통 설정 (전체)</button>
               )}
             </div>
  
@@ -3277,61 +3410,61 @@ export default function App() {
                   {contentType === 'intro' && (
                     <>
                       <section className="bg-pink-50 rounded-xl p-4 border border-pink-100">
-                        <h3 className="font-bold text-sm text-pink-800 mb-2 flex items-center gap-1"><span>🖼️</span> 배경 이미지</h3>
-                        <input type="file" accept="image/*" onChange={e => handleIntroImageUpload(e, 'bg')} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-pink-100 file:text-pink-700 hover:file:bg-pink-200 cursor-pointer" />
-                        <p className="text-[11px] text-gray-400 mt-2">{activeData.bgFileName ? `업로드됨: ${activeData.bgFileName}` : '⚠️ 아직 예시 이미지입니다 — 업로드 전까지는 ZIP 추출이 되지 않습니다.'}</p>
+                        <h3 className="font-bold text-base text-pink-800 mb-2 flex items-center gap-1"><span>🖼️</span> 배경 이미지</h3>
+                        <input type="file" accept="image/*" onChange={e => handleIntroImageUpload(e, 'bg')} className="block w-full text-base text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-pink-100 file:text-pink-700 hover:file:bg-pink-200 cursor-pointer" />
+                        <p className="text-[13px] text-gray-400 mt-2">{activeData.bgFileName ? `업로드됨: ${activeData.bgFileName}` : '⚠️ 아직 예시 이미지입니다 — 업로드 전까지는 ZIP 추출이 되지 않습니다.'}</p>
                         <div className="pt-3 mt-3 border-t border-pink-200">
-                          <label className="block text-pink-800 text-[11px] font-bold mb-1">배경 이미지 대체 텍스트 (mainImageAriaLabel)</label>
-                          <textarea value={activeData.mainImageAriaLabel || ''} onChange={e => updateViewProp('mainImageAriaLabel', e.target.value)} rows={3} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" placeholder="시각장애인용 배경 이미지 설명 (AI 자동 생성, 수정 가능)" />
+                          <label className="block text-pink-800 text-[13px] font-bold mb-1">배경 이미지 대체 텍스트 (mainImageAriaLabel)</label>
+                          <textarea value={activeData.mainImageAriaLabel || ''} onChange={e => updateViewProp('mainImageAriaLabel', e.target.value)} rows={3} className="w-full border border-pink-200 p-2 text-sm rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" placeholder="시각장애인용 배경 이미지 설명 (AI 자동 생성, 수정 가능)" />
                         </div>
                       </section>
 
                       <section className="bg-pink-50 rounded-xl p-4 border border-pink-100">
-                        <h3 className="font-bold text-sm text-pink-800 mb-2 flex items-center gap-1"><span>🏷️</span> 타이틀 이미지</h3>
-                        <input type="file" accept="image/*" onChange={e => handleIntroImageUpload(e, 'title')} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-pink-100 file:text-pink-700 hover:file:bg-pink-200 cursor-pointer" />
-                        <p className="text-[11px] text-gray-400 mt-2">{activeData.titleFileName ? `업로드됨: ${activeData.titleFileName}` : '⚠️ 아직 예시 이미지입니다 — 업로드 전까지는 ZIP 추출이 되지 않습니다.'}</p>
+                        <h3 className="font-bold text-base text-pink-800 mb-2 flex items-center gap-1"><span>🏷️</span> 타이틀 이미지</h3>
+                        <input type="file" accept="image/*" onChange={e => handleIntroImageUpload(e, 'title')} className="block w-full text-base text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-pink-100 file:text-pink-700 hover:file:bg-pink-200 cursor-pointer" />
+                        <p className="text-[13px] text-gray-400 mt-2">{activeData.titleFileName ? `업로드됨: ${activeData.titleFileName}` : '⚠️ 아직 예시 이미지입니다 — 업로드 전까지는 ZIP 추출이 되지 않습니다.'}</p>
                         <div className="pt-3 mt-3 border-t border-pink-200">
-                          <label className="block text-pink-800 text-[11px] font-bold mb-1">타이틀 오디오 ID (titleAudioId)</label>
-                          <input type="text" value={activeData.titleAudioId || ''} onChange={e => updateViewProp('titleAudioId', e.target.value)} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" placeholder="예: L1_010_Lesson1" />
+                          <label className="block text-pink-800 text-[13px] font-bold mb-1">타이틀 오디오 ID (titleAudioId)</label>
+                          <input type="text" value={activeData.titleAudioId || ''} onChange={e => updateViewProp('titleAudioId', e.target.value)} className="w-full border border-pink-200 p-2 text-sm rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" placeholder="예: L1_010_Lesson1" />
                         </div>
                         {/* 💡 [신규] 위치는 캔버스에서 드래그로도 옮길 수 있고, 여기 숫자 입력으로 정밀 조정도
                             가능하다(둘이 같은 값을 공유). 높이는 원본 이미지 비율을 유지해 자동 계산되므로
                             너비(width)만 조정 대상이다. */}
                         <div className="pt-3 mt-3 border-t border-pink-200 grid grid-cols-3 gap-2">
                           <div>
-                            <label className="block text-pink-800 text-[11px] font-bold mb-1">X 좌표</label>
-                            <input type="number" value={activeData.titleX ?? 50} onChange={e => updateViewProp('titleX', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
+                            <label className="block text-pink-800 text-[13px] font-bold mb-1">X 좌표</label>
+                            <input type="number" value={activeData.titleX ?? 50} onChange={e => updateViewProp('titleX', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-sm rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
                           </div>
                           <div>
-                            <label className="block text-pink-800 text-[11px] font-bold mb-1">Y 좌표</label>
-                            <input type="number" value={activeData.titleY ?? 20} onChange={e => updateViewProp('titleY', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
+                            <label className="block text-pink-800 text-[13px] font-bold mb-1">Y 좌표</label>
+                            <input type="number" value={activeData.titleY ?? 20} onChange={e => updateViewProp('titleY', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-sm rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
                           </div>
                           <div>
-                            <label className="block text-pink-800 text-[11px] font-bold mb-1">너비 (W)</label>
-                            <input type="number" value={activeData.titleWidth ?? 460} onChange={e => updateViewProp('titleWidth', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
+                            <label className="block text-pink-800 text-[13px] font-bold mb-1">너비 (W)</label>
+                            <input type="number" value={activeData.titleWidth ?? 460} onChange={e => updateViewProp('titleWidth', Number(e.target.value))} className="w-full border border-pink-200 p-2 text-sm rounded-lg focus:ring-2 focus:ring-pink-500 outline-none bg-white" />
                           </div>
                         </div>
-                        <p className="text-[11px] text-gray-400 mt-2">💡 캔버스에서 타이틀 이미지를 직접 드래그해도 위치가 바뀝니다. 높이는 원본 비율대로 자동 조정됩니다.</p>
+                        <p className="text-[13px] text-gray-400 mt-2">💡 캔버스에서 타이틀 이미지를 직접 드래그해도 위치가 바뀝니다. 높이는 원본 비율대로 자동 조정됩니다.</p>
                       </section>
 
                       <section className="bg-white rounded-xl p-4 border border-gray-200">
-                        <h3 className="font-bold text-sm text-gray-700 mb-2 flex items-center gap-1"><span>🎯</span> 학습 목표 박스</h3>
+                        <h3 className="font-bold text-base text-gray-700 mb-2 flex items-center gap-1"><span>🎯</span> 학습 목표 박스</h3>
                         <div className="mb-3">
-                          <label className="block text-gray-500 text-xs mb-1">라벨 텍스트 (learningObjectiveTitle)</label>
-                          <input type="text" value={activeData.learningObjectiveTitle || ''} onChange={e => updateViewProp('learningObjectiveTitle', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="학습 목표" />
+                          <label className="block text-gray-500 text-sm mb-1">라벨 텍스트 (learningObjectiveTitle)</label>
+                          <input type="text" value={activeData.learningObjectiveTitle || ''} onChange={e => updateViewProp('learningObjectiveTitle', e.target.value)} className="w-full border border-gray-300 p-2 text-base rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="학습 목표" />
                         </div>
                         <div className="mb-3">
                           {/* 💡 [수정] 다른 유형(Understand 말풍선 bg_color/border_color)과 동일하게 색상
                               스와치 + HEX 텍스트 입력을 페어로 제공 — 마우스로 고르거나 HEX를 직접
                               입력하거나 둘 다 가능하다. */}
-                          <label className="block text-gray-500 text-xs mb-1">메인 색상 (learningObjectiveColor)</label>
+                          <label className="block text-gray-500 text-sm mb-1">메인 색상 (learningObjectiveColor)</label>
                           <div className="flex items-center border border-gray-300 rounded-lg overflow-hidden">
                             <input type="color" value={activeData.learningObjectiveColor || '#eb1e79'} onChange={e => updateViewProp('learningObjectiveColor', e.target.value)} className="w-10 h-9 p-0 border-0 cursor-pointer shrink-0" />
-                            <input type="text" value={activeData.learningObjectiveColor || '#eb1e79'} onChange={e => updateViewProp('learningObjectiveColor', e.target.value)} className="w-full text-xs p-2 bg-white outline-none" placeholder="#eb1e79" />
+                            <input type="text" value={activeData.learningObjectiveColor || '#eb1e79'} onChange={e => updateViewProp('learningObjectiveColor', e.target.value)} className="w-full text-sm p-2 bg-white outline-none" placeholder="#eb1e79" />
                           </div>
                         </div>
-                        <label className="block text-gray-500 text-xs mb-1">학습 목표 내용 (learningObjective)</label>
-                        <textarea value={activeData.learningObjective || ''} onChange={e => updateViewProp('learningObjective', e.target.value)} rows={5} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" placeholder={'1단원의 학습 내용을 확인하고 학습 계획을 세워봅시다.\n(줄바꿈으로 여러 줄 입력 가능)'} />
+                        <label className="block text-gray-500 text-sm mb-1">학습 목표 내용 (learningObjective)</label>
+                        <textarea value={activeData.learningObjective || ''} onChange={e => updateViewProp('learningObjective', e.target.value)} rows={5} className="w-full border border-gray-300 p-2 text-base rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" placeholder={'1단원의 학습 내용을 확인하고 학습 계획을 세워봅시다.\n(줄바꿈으로 여러 줄 입력 가능)'} />
                       </section>
                     </>
                   )}
@@ -3340,11 +3473,11 @@ export default function App() {
                   {contentType === 'understand' && (
                     <>
                       <section className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
-                        <h3 className="font-bold text-sm text-emerald-800 mb-2 flex items-center gap-1"><span>🖼️</span> 메인 이미지 설정</h3>
-                        <input type="file" accept="image/*" onChange={handleBgSwap} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 cursor-pointer mb-3" />
+                        <h3 className="font-bold text-base text-emerald-800 mb-2 flex items-center gap-1"><span>🖼️</span> 메인 이미지 설정</h3>
+                        <input type="file" accept="image/*" onChange={handleBgSwap} className="block w-full text-base text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 cursor-pointer mb-3" />
                         <div className="pt-3 border-t border-emerald-200">
-                          <label className="block text-emerald-800 text-[11px] font-bold mb-1">이미지 대체 텍스트 (image_aria_label)</label>
-                          <input type="text" value={activeData.image_aria_label || ''} onChange={e => updateViewProp('image_aria_label', e.target.value)} className="w-full border border-emerald-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none bg-white" placeholder="시각장애인용 이미지 설명 입력..." />
+                          <label className="block text-emerald-800 text-[13px] font-bold mb-1">이미지 대체 텍스트 (image_aria_label)</label>
+                          <input type="text" value={activeData.image_aria_label || ''} onChange={e => updateViewProp('image_aria_label', e.target.value)} className="w-full border border-emerald-200 p-2 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none bg-white" placeholder="시각장애인용 이미지 설명 입력..." />
                         </div>
                       </section>
  
@@ -3353,13 +3486,13 @@ export default function App() {
                       <section className="bg-indigo-50 rounded-xl p-3 border border-indigo-100">
                         <div className="flex items-center justify-between">
                           <button onClick={() => setActiveBubbleIdx(i => Math.max(0, i - 1))} disabled={activeBubbleIdx === 0} className="w-7 h-7 flex items-center justify-center rounded-full bg-white border border-indigo-200 text-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed">‹</button>
-                          <span className="text-xs font-bold text-indigo-800">{(activeData.bubbles || []).length === 0 ? '이 컷에는 말풍선이 없음' : `말풍선 ${activeBubbleIdx + 1} / ${(activeData.bubbles || []).length}`}</span>
+                          <span className="text-sm font-bold text-indigo-800">{(activeData.bubbles || []).length === 0 ? '이 컷에는 말풍선이 없음' : `말풍선 ${activeBubbleIdx + 1} / ${(activeData.bubbles || []).length}`}</span>
                           <button onClick={() => setActiveBubbleIdx(i => Math.min((activeData.bubbles || []).length - 1, i + 1))} disabled={activeBubbleIdx >= (activeData.bubbles || []).length - 1} className="w-7 h-7 flex items-center justify-center rounded-full bg-white border border-indigo-200 text-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed">›</button>
                         </div>
                         <div className="flex gap-2 mt-2">
-                          <button onClick={addBubble} className="flex-1 py-1.5 bg-indigo-100 text-indigo-700 text-xs font-bold rounded hover:bg-indigo-200 transition">+ 말풍선 추가</button>
+                          <button onClick={addBubble} className="flex-1 py-1.5 bg-indigo-100 text-indigo-700 text-sm font-bold rounded hover:bg-indigo-200 transition">+ 말풍선 추가</button>
                           {(activeData.bubbles || []).length > 1 && (
-                            <button onClick={deleteBubble} className="flex-1 py-1.5 bg-red-50 text-red-600 text-xs font-bold rounded hover:bg-red-100 transition">🗑 이 말풍선 삭제</button>
+                            <button onClick={deleteBubble} className="flex-1 py-1.5 bg-red-50 text-red-600 text-sm font-bold rounded hover:bg-red-100 transition">🗑 이 말풍선 삭제</button>
                           )}
                         </div>
                       </section>
@@ -3368,28 +3501,28 @@ export default function App() {
                           텍스트 편집 섹션 자체를 숨긴다 — activeBubble이 undefined인 채로 이 섹션들을
                           그리면 입력해도 반영 안 되는 죽은 UI가 되고, "말풍선 1/0" 같은 혼란도 생김. */}
                       {(activeData.bubbles || []).length === 0 ? (
-                        <section className="text-center py-6 text-gray-400 text-sm">
+                        <section className="text-center py-6 text-gray-400 text-base">
                           이 컷에는 말풍선이 없습니다.<br />위 "+ 말풍선 추가" 버튼으로 필요할 때 추가하세요.
                         </section>
                       ) : (
                         <>
                       <section>
-                        <h3 className="font-bold text-sm text-gray-700 border-b pb-2 mb-3">📐 말풍선 좌표 및 크기</h3>
-                        <div className="grid grid-cols-3 gap-3 text-sm">
-                          <div><label className="block text-gray-500 text-xs mb-1">X 좌표</label><input type="number" value={activeBubble?.bubble?.x || 0} onChange={e => updateBubbleProp('x', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg bg-gray-50 font-bold focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
-                          <div><label className="block text-gray-500 text-xs mb-1">Y 좌표</label><input type="number" value={activeBubble?.bubble?.y || 0} onChange={e => updateBubbleProp('y', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg bg-gray-50 font-bold focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
-                          <div><label className="block text-gray-500 text-xs mb-1">너비 (W)</label><input type="number" value={activeBubble?.bubble?.width || 0} onChange={e => updateBubbleProp('width', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                        <h3 className="font-bold text-base text-gray-700 border-b pb-2 mb-3">📐 말풍선 좌표 및 크기</h3>
+                        <div className="grid grid-cols-3 gap-3 text-base">
+                          <div><label className="block text-gray-500 text-sm mb-1">X 좌표</label><input type="number" value={activeBubble?.bubble?.x || 0} onChange={e => updateBubbleProp('x', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg bg-gray-50 font-bold focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                          <div><label className="block text-gray-500 text-sm mb-1">Y 좌표</label><input type="number" value={activeBubble?.bubble?.y || 0} onChange={e => updateBubbleProp('y', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg bg-gray-50 font-bold focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
+                          <div><label className="block text-gray-500 text-sm mb-1">너비 (W)</label><input type="number" value={activeBubble?.bubble?.width || 0} onChange={e => updateBubbleProp('width', Number(e.target.value))} className="w-full border border-gray-300 p-2 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" /></div>
                         </div>
                       </section>
 
                       <section>
-                        <h3 className="font-bold text-sm text-gray-700 border-b pb-2 mb-3">🎨 말풍선 꼬리</h3>
-                        <div className="grid grid-cols-3 gap-3 text-sm mb-3">
-                          <div><label className="block text-gray-500 text-[11px] font-bold mb-1">꼬리 방향</label><select value={activeBubble?.bubble?.tail_dir || 'bottom'} onChange={e => updateBubbleProp('tail_dir', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer bg-white"><option value="bottom">Bottom (하단)</option><option value="top">Top (상단)</option><option value="left">Left (좌측)</option><option value="right">Right (우측)</option><option value="none">없음 (꼬리 삭제)</option></select></div>
-                          <div><label className="block text-gray-500 text-[11px] font-bold mb-1">꼬리 위치 (%)</label><input type="number" min="0" max="100" disabled={activeBubble?.bubble?.tail_dir === 'none'} value={activeBubble?.bubble?.tail_pos || 50} onChange={e => updateBubbleProp('tail_pos', Number(e.target.value))} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none bg-white disabled:bg-gray-100 disabled:text-gray-400" /></div>
+                        <h3 className="font-bold text-base text-gray-700 border-b pb-2 mb-3">🎨 말풍선 꼬리</h3>
+                        <div className="grid grid-cols-3 gap-3 text-base mb-3">
+                          <div><label className="block text-gray-500 text-[13px] font-bold mb-1">꼬리 방향</label><select value={activeBubble?.bubble?.tail_dir || 'bottom'} onChange={e => updateBubbleProp('tail_dir', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer bg-white"><option value="bottom">Bottom (하단)</option><option value="top">Top (상단)</option><option value="left">Left (좌측)</option><option value="right">Right (우측)</option><option value="none">없음 (꼬리 삭제)</option></select></div>
+                          <div><label className="block text-gray-500 text-[13px] font-bold mb-1">꼬리 위치 (%)</label><input type="number" min="0" max="100" disabled={activeBubble?.bubble?.tail_dir === 'none'} value={activeBubble?.bubble?.tail_pos || 50} onChange={e => updateBubbleProp('tail_pos', Number(e.target.value))} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none bg-white disabled:bg-gray-100 disabled:text-gray-400" /></div>
                           <div>
-                            <label className="block text-gray-500 text-[11px] font-bold mb-1">꼬리 끝 방향</label>
-                            <select disabled={activeBubble?.bubble?.tail_dir === 'none'} value={activeBubble?.bubble?.tail_tip || 'right'} onChange={e => updateBubbleProp('tail_tip', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer bg-white disabled:bg-gray-100 disabled:text-gray-400">
+                            <label className="block text-gray-500 text-[13px] font-bold mb-1">꼬리 끝 방향</label>
+                            <select disabled={activeBubble?.bubble?.tail_dir === 'none'} value={activeBubble?.bubble?.tail_tip || 'right'} onChange={e => updateBubbleProp('tail_tip', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer bg-white disabled:bg-gray-100 disabled:text-gray-400">
                               <option value="right">오른쪽 휨</option>
                               <option value="left">왼쪽 휨</option>
                             </select>
@@ -3398,20 +3531,20 @@ export default function App() {
                       </section>
 
                       <section>
-                        <h3 className="font-bold text-sm text-gray-700 border-b pb-2 mb-3">🎨 말풍선 색상</h3>
-                        <div className="grid grid-cols-2 gap-3 text-sm mb-3">
+                        <h3 className="font-bold text-base text-gray-700 border-b pb-2 mb-3">🎨 말풍선 색상</h3>
+                        <div className="grid grid-cols-2 gap-3 text-base mb-3">
                           <div>
-                            <label className="block text-gray-500 text-xs mb-1">배경색 (bg_color)</label>
+                            <label className="block text-gray-500 text-sm mb-1">배경색 (bg_color)</label>
                             <div className="flex border border-gray-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500">
                               <input type="color" value={activeBubble?.bubble?.bg_color || '#ffffff'} onChange={e => updateBubbleProp('bg_color', e.target.value)} className="w-10 h-9 p-0 border-0 cursor-pointer shrink-0" />
-                              <input type="text" value={activeBubble?.bubble?.bg_color || '#ffffff'} onChange={e => updateBubbleProp('bg_color', e.target.value)} className="w-full text-xs p-2 bg-white outline-none" placeholder="#FFFFFF" />
+                              <input type="text" value={activeBubble?.bubble?.bg_color || '#ffffff'} onChange={e => updateBubbleProp('bg_color', e.target.value)} className="w-full text-sm p-2 bg-white outline-none" placeholder="#FFFFFF" />
                             </div>
                           </div>
                           <div>
-                            <label className="block text-gray-500 text-xs mb-1">테두리색 (border_color)</label>
+                            <label className="block text-gray-500 text-sm mb-1">테두리색 (border_color)</label>
                             <div className="flex border border-gray-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500">
                               <input type="color" value={activeBubble?.bubble?.border_color || '#000000'} onChange={e => updateBubbleProp('border_color', e.target.value)} className="w-10 h-9 p-0 border-0 cursor-pointer shrink-0" />
-                              <input type="text" value={activeBubble?.bubble?.border_color || '#000000'} onChange={e => updateBubbleProp('border_color', e.target.value)} className="w-full text-xs p-2 bg-white outline-none" placeholder="#000000" />
+                              <input type="text" value={activeBubble?.bubble?.border_color || '#000000'} onChange={e => updateBubbleProp('border_color', e.target.value)} className="w-full text-sm p-2 bg-white outline-none" placeholder="#000000" />
                             </div>
                           </div>
                         </div>
@@ -3419,8 +3552,8 @@ export default function App() {
 
                       <section>
                         <div className="flex justify-between items-center border-b pb-2 mb-3">
-                           <h3 className="font-bold text-sm text-gray-700">📝 텍스트 렌더링 타입</h3>
-                           <select value={activeBubble?.text?.type || 'inline'} onChange={(e) => handleTextTypeChange(e.target.value)} className="border border-emerald-400 bg-emerald-50 text-emerald-800 text-xs font-bold rounded-full px-3 py-1 cursor-pointer outline-none">
+                           <h3 className="font-bold text-base text-gray-700">📝 텍스트 렌더링 타입</h3>
+                           <select value={activeBubble?.text?.type || 'inline'} onChange={(e) => handleTextTypeChange(e.target.value)} className="border border-emerald-400 bg-emerald-50 text-emerald-800 text-sm font-bold rounded-full px-3 py-1 cursor-pointer outline-none">
                              <option value="inline">Inline (한 줄 이음)</option>
                              <option value="lines">Lines (1오디오 여러 줄)</option>
                              <option value="zipper">Zipper (개별 오디오 분리)</option>
@@ -3431,42 +3564,54 @@ export default function App() {
                           {activeBubble?.text?.type === 'lines' ? (
                             (activeBubble?.text?.eng || []).map((engItem, engIdx) => (
                               <div key={engIdx} className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl relative shadow-sm">
-                                <div className="flex justify-between items-center mb-2">
-                                   <label className="text-indigo-800 text-xs font-bold">오디오 ID (통합)</label>
-                                   <input type="text" value={engItem.audio_id || ''} onChange={e => handleSentenceChange(engIdx, 'audio_id', e.target.value)} className="w-48 p-1.5 text-xs border border-indigo-300 rounded font-mono focus:ring-1 focus:ring-indigo-500 outline-none" placeholder="L2_039_Bridge_A_3" />
+                                <div className="flex justify-between items-center mb-1">
+                                   <label className="text-indigo-800 text-sm font-bold">오디오 ID (통합)</label>
+                                   <input type="text" value={engItem.audio_id || ''} onChange={e => handleSentenceChange(engIdx, 'audio_id', e.target.value)} className="w-48 p-1.5 text-sm border border-indigo-300 rounded font-mono focus:ring-1 focus:ring-indigo-500 outline-none" placeholder="예: L2_039_Bridge_A_3" />
                                 </div>
+                                {/* 💡 [사용성 개선] 확장자 없이 순수 ID만 입력해도 되도록 안내(마스터 템플릿이
+                                    .mp3를 붙여 파일을 찾음 — 비디오/묵음 필드와 동일한 관례). */}
+                                <p className="mb-2 text-[12px] text-indigo-500 leading-snug">
+                                   ⚠️ 확장자 없이 ID만 입력하세요. 재생 시 자동으로 붙는 파일명 →{' '}
+                                   <span className="font-mono font-bold">{engItem.audio_id ? `${engItem.audio_id}.mp3` : 'L2_039_Bridge_A_3.mp3'}</span>
+                                </p>
 
                                 <div className="space-y-2 mt-3">
                                   {(engItem.lines || []).map((line, lineIdx) => (
                                     <div key={lineIdx} className="pl-3 border-l-2 border-indigo-300 relative group">
-                                      <button onClick={() => removeLine(engIdx, lineIdx)} className="absolute -right-2 top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
-                                      <div className="text-[10px] font-bold text-indigo-500 mb-1">Line {lineIdx + 1}</div>
-                                      <input type="text" value={line.en || ''} onChange={e => handleLinesChange(engIdx, lineIdx, 'en', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded mb-1 focus:ring-1 focus:ring-indigo-500 outline-none bg-white" placeholder="영어 입력..." />
-                                      <input type="text" value={line.ko || ''} onChange={e => handleLinesChange(engIdx, lineIdx, 'ko', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-indigo-500 outline-none bg-white" placeholder="한글 입력..." />
+                                      <button onClick={() => removeLine(engIdx, lineIdx)} className="absolute -right-2 top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[12px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
+                                      <div className="text-[12px] font-bold text-indigo-500 mb-1">Line {lineIdx + 1}</div>
+                                      <input type="text" value={line.en || ''} onChange={e => handleLinesChange(engIdx, lineIdx, 'en', e.target.value)} className="w-full p-1.5 text-sm border border-gray-300 rounded mb-1 focus:ring-1 focus:ring-indigo-500 outline-none bg-white" placeholder="영어 입력..." />
+                                      <input type="text" value={line.ko || ''} onChange={e => handleLinesChange(engIdx, lineIdx, 'ko', e.target.value)} className="w-full p-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-indigo-500 outline-none bg-white" placeholder="한글 입력..." />
                                     </div>
                                   ))}
                                 </div>
-                                <button onClick={() => addLine(engIdx)} className="w-full mt-3 py-1.5 bg-indigo-100 text-indigo-700 text-xs font-bold rounded hover:bg-indigo-200 transition">+ 줄(Line) 추가</button>
+                                <button onClick={() => addLine(engIdx)} className="w-full mt-3 py-1.5 bg-indigo-100 text-indigo-700 text-sm font-bold rounded hover:bg-indigo-200 transition">+ 줄(Line) 추가</button>
                               </div>
                             ))
                           ) : (
                             (activeBubble?.text?.eng || []).map((item, engIdx) => (
                                <div key={engIdx} className="p-3 bg-gray-50 border border-gray-200 rounded-xl relative group shadow-sm">
-                                 <button onClick={() => removeSentence(engIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
-                                 <div className="text-xs font-bold text-gray-500 mb-2">문장 {engIdx + 1}</div>
+                                 <button onClick={() => removeSentence(engIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[12px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
+                                 <div className="text-sm font-bold text-gray-500 mb-2">문장 {engIdx + 1}</div>
 
-                                 <label className="block text-emerald-700 text-[11px] font-bold mb-1">영어 (en)</label>
-                                 <textarea value={item.sentence || ''} onChange={e => handleSentenceChange(engIdx, 'sentence', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="영어 문장 입력 (<br> 사용 가능)" />
+                                 <label className="block text-emerald-700 text-[13px] font-bold mb-1">영어 (en)</label>
+                                 <textarea value={item.sentence || ''} onChange={e => handleSentenceChange(engIdx, 'sentence', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="영어 문장 입력 (<br> 사용 가능)" />
 
-                                 <label className="block text-emerald-700 text-[11px] font-bold mb-1">한글 해석 (ko)</label>
-                                 <textarea value={item.kor || ''} onChange={e => handleSentenceChange(engIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력 (<br> 사용 가능)" />
+                                 <label className="block text-emerald-700 text-[13px] font-bold mb-1">한글 해석 (ko)</label>
+                                 <textarea value={item.kor || ''} onChange={e => handleSentenceChange(engIdx, 'kor', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력 (<br> 사용 가능)" />
 
-                                 <label className="block text-emerald-700 text-[11px] font-bold mb-1">오디오 ID</label>
-                                 <input type="text" value={item.audio_id || ''} onChange={e => handleSentenceChange(engIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L2_039_Bridge_A_1" />
+                                 <label className="block text-emerald-700 text-[13px] font-bold mb-1">오디오 ID</label>
+                                 <input type="text" value={item.audio_id || ''} onChange={e => handleSentenceChange(engIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="예: L2_039_Bridge_A_1" />
+                                 {/* 💡 [사용성 개선] 확장자 없이 순수 ID만 입력해도 되도록 안내(마스터 템플릿이
+                                     .mp3를 붙여 파일을 찾음 — 비디오/묵음 필드와 동일한 관례). */}
+                                 <p className="mt-1 text-[12px] text-emerald-600 leading-snug">
+                                    ⚠️ 확장자 없이 ID만 입력하세요. 재생 시 자동으로 붙는 파일명 →{' '}
+                                    <span className="font-mono font-bold">{item.audio_id ? `${item.audio_id}.mp3` : 'L2_039_Bridge_A_1.mp3'}</span>
+                                 </p>
                                </div>
                             ))
                           )}
-                          <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-gray-300 text-gray-500 text-xs font-bold rounded-xl hover:bg-gray-100 hover:text-gray-700 transition">+ 새로운 문장 추가</button>
+                          <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-gray-300 text-gray-500 text-sm font-bold rounded-xl hover:bg-gray-100 hover:text-gray-700 transition">+ 새로운 문장 추가</button>
                         </div>
                       </section>
                         </>
@@ -3478,25 +3623,25 @@ export default function App() {
                   {contentType === 'roleplay_b' && (
                      <>
                         <div className="border-b border-emerald-200 pb-2 mb-3">
-                           <h3 className="font-bold text-sm text-emerald-800">🖼️ 장면(Scene) 전용 리소스 설정</h3>
+                           <h3 className="font-bold text-base text-emerald-800">🖼️ 장면(Scene) 전용 리소스 설정</h3>
                         </div>
                         <div className="space-y-3 bg-emerald-50/40 p-3 rounded-xl border border-emerald-100">
                            <div>
-                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">상황극 이미지 업로드</label>
-                              <input type="file" accept="image/*" onChange={handleSceneImageUpload} className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 cursor-pointer" />
-                              <p className="text-[10px] text-gray-400 mt-1">업로드하면 캔버스 미리보기와 하단 씬 썸네일이 자동 갱신됩니다.</p>
+                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">상황극 이미지 업로드</label>
+                              <input type="file" accept="image/*" onChange={handleSceneImageUpload} className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 cursor-pointer" />
+                              <p className="text-[12px] text-gray-400 mt-1">업로드하면 캔버스 미리보기와 하단 씬 썸네일이 자동 갱신됩니다.</p>
                            </div>
                            <div>
-                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">상황극 메인 이미지 파일명 (ZIP 내 경로용)</label>
-                              <input type="text" value={activeData.rolePlayImage || ''} onChange={e => handleSceneBPropChange('rolePlayImage', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none font-mono focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="ex: RolePlay_img_0.png" />
+                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">상황극 메인 이미지 파일명 (ZIP 내 경로용)</label>
+                              <input type="text" value={activeData.rolePlayImage || ''} onChange={e => handleSceneBPropChange('rolePlayImage', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg outline-none font-mono focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="ex: RolePlay_img_0.png" />
                            </div>
                            <div>
-                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">하단 썸네일 이미지 파일명 (ZIP 내 경로용)</label>
-                              <input type="text" value={activeData.panelBtnImage || ''} onChange={e => handleSceneBPropChange('panelBtnImage', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none font-mono focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="ex: RolePlay_img_mini_0001.png" />
+                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">하단 썸네일 이미지 파일명 (ZIP 내 경로용)</label>
+                              <input type="text" value={activeData.panelBtnImage || ''} onChange={e => handleSceneBPropChange('panelBtnImage', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg outline-none font-mono focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="ex: RolePlay_img_mini_0001.png" />
                            </div>
                            <div>
-                              <label className="block text-emerald-700 text-[11px] font-bold mb-1">하단 썸네일 접근성 라벨</label>
-                              <input type="text" value={activeData.panelBtnLabel || ''} onChange={e => handleSceneBPropChange('panelBtnLabel', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="클릭 시 해당 장면의 대화를 볼 수 있습니다." />
+                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">하단 썸네일 접근성 라벨</label>
+                              <input type="text" value={activeData.panelBtnLabel || ''} onChange={e => handleSceneBPropChange('panelBtnLabel', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="클릭 시 해당 장면의 대화를 볼 수 있습니다." />
                            </div>
                         </div>
 
@@ -3507,12 +3652,12 @@ export default function App() {
                         {extractedTips.length > 0 && (
                           <div className="mt-6">
                              <div className="border-b border-amber-200 pb-2 mb-3">
-                                <h3 className="font-bold text-sm text-amber-800">🔤 교체 후보 (Tips)</h3>
+                                <h3 className="font-bold text-base text-amber-800">🔤 교체 후보 (Tips)</h3>
                              </div>
                              <div className="space-y-1.5 bg-amber-50/50 p-3 rounded-xl border border-amber-100">
-                                <p className="text-[10px] text-amber-700/80 mb-1">AI가 지면에서 인식한 교체 표현 후보입니다 (참고용, 대화 스크립트에 자동 반영되지 않습니다).</p>
+                                <p className="text-[12px] text-amber-700/80 mb-1">AI가 지면에서 인식한 교체 표현 후보입니다 (참고용, 대화 스크립트에 자동 반영되지 않습니다).</p>
                                 {extractedTips.map((tip, tipIdx) => (
-                                   <div key={tipIdx} className="text-xs text-gray-700 bg-white border border-amber-100 rounded-lg px-2.5 py-1.5">
+                                   <div key={tipIdx} className="text-sm text-gray-700 bg-white border border-amber-100 rounded-lg px-2.5 py-1.5">
                                       {tip}
                                    </div>
                                 ))}
@@ -3521,16 +3666,16 @@ export default function App() {
                         )}
 
                         <div className="border-b border-emerald-200 pb-2 mb-3 mt-6">
-                           <h3 className="font-bold text-sm text-emerald-800">📝 장면 대화 스크립트 작성</h3>
+                           <h3 className="font-bold text-base text-emerald-800">📝 장면 대화 스크립트 작성</h3>
                         </div>
                         <div className="space-y-4">
                            {(activeData.dialogues || []).map((item, dialIdx) => (
                                <div key={dialIdx} className="p-3 border rounded-xl relative group shadow-sm bg-gray-50 border-gray-200 space-y-2">
-                                  <button onClick={() => handleDialogueBDelete(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
+                                  <button onClick={() => handleDialogueBDelete(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[12px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white">✕</button>
 
                                   <div className="flex justify-between items-center mb-1">
                                      <div className="flex items-center gap-2">
-                                        <select value={item.speaker || 'A'} onChange={e => handleDialogueBChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-emerald-950 rounded bg-emerald-100 border border-emerald-300 outline-none cursor-pointer">
+                                        <select value={item.speaker || 'A'} onChange={e => handleDialogueBChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-sm font-bold text-emerald-950 rounded bg-emerald-100 border border-emerald-300 outline-none cursor-pointer">
                                            <option value="A">A 역할</option>
                                            <option value="B">B 역할</option>
                                         </select>
@@ -3538,9 +3683,9 @@ export default function App() {
                                   </div>
 
                                   <div className="flex items-center justify-between">
-                                     <label className="block text-emerald-700 text-[10px] font-bold">영어 대사</label>
+                                     <label className="block text-emerald-700 text-[12px] font-bold">영어 대사</label>
                                      <div className="flex items-center gap-1">
-                                        <span className="text-[9px] text-gray-400 mr-0.5">강조: 텍스트 선택 후 클릭</span>
+                                        <span className="text-[11px] text-gray-400 mr-0.5">강조: 텍스트 선택 후 클릭</span>
                                         {EMP_COLORS.map(c => (
                                            <button
                                               key={c.cls}
@@ -3557,18 +3702,18 @@ export default function App() {
                                      ref={el => { dialogueBSentenceRefs.current[dialIdx] = el; }}
                                      value={item.sentence || ''}
                                      onChange={e => handleDialogueBChange(dialIdx, 'sentence', e.target.value)}
-                                     className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none resize-none h-16 bg-white"
+                                     className="w-full p-2 text-sm border border-gray-300 rounded-lg outline-none resize-none h-16 bg-white"
                                      placeholder="영어 대사 입력 (강조할 부분을 마우스로 선택한 뒤 위 색상 버튼을 누르세요)"
                                   />
 
-                                  <label className="block text-emerald-700 text-[10px] font-bold">한글 해석</label>
-                                  <textarea value={item.kor || ''} onChange={e => handleDialogueBChange(dialIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg outline-none resize-none h-12 bg-white" placeholder="한글 번역 해석" />
+                                  <label className="block text-emerald-700 text-[12px] font-bold">한글 해석</label>
+                                  <textarea value={item.kor || ''} onChange={e => handleDialogueBChange(dialIdx, 'kor', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg outline-none resize-none h-12 bg-white" placeholder="한글 번역 해석" />
 
-                                  <label className="block text-emerald-700 text-[10px] font-bold">오디오 ID</label>
-                                  <input type="text" value={item.audio_id || ''} onChange={e => handleDialogueBChange(dialIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L3_001_CommB_eg_01" />
+                                  <label className="block text-emerald-700 text-[12px] font-bold">오디오 ID</label>
+                                  <input type="text" value={item.audio_id || ''} onChange={e => handleDialogueBChange(dialIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L3_001_CommB_eg_01" />
                                </div>
                            ))}
-                           <button onClick={addDialogueB} className="w-full py-2 border-2 border-dashed border-emerald-300 text-emerald-600 text-xs font-bold rounded-xl hover:bg-emerald-100 transition">+ 대사 추가</button>
+                           <button onClick={addDialogueB} className="w-full py-2 border-2 border-dashed border-emerald-300 text-emerald-600 text-sm font-bold rounded-xl hover:bg-emerald-100 transition">+ 대사 추가</button>
                         </div>
                      </>
                   )}
@@ -3577,9 +3722,9 @@ export default function App() {
                   {contentType === 'roleplay_a' && (
                      <>
                         <div className="border-b border-purple-200 pb-2 mb-3">
-                           <h3 className="font-bold text-sm text-purple-800">📝 대화 스크립트 작성</h3>
+                           <h3 className="font-bold text-base text-purple-800">📝 대화 스크립트 작성</h3>
                         </div>
-                        <ul className="text-[10px] leading-relaxed text-gray-400 -mt-2 mb-3 space-y-0.5 list-disc list-inside">
+                        <ul className="text-[12px] leading-relaxed text-gray-400 -mt-2 mb-3 space-y-0.5 list-disc list-inside">
                            <li>실제 콘텐츠에서는 하단의 [저장] 버튼을 누르면 그 자리에서 [다시 하기] 버튼으로 바뀌어 나타납니다. 캔버스는 최초 진입 상태([저장]만 표시)만 보여줍니다.</li>
                            <li>화면 하단 스크린리더용 안내문(hiddenText)은 "공통 설정" 탭의 지시문(instruction)을 그대로 재사용해 자동으로 만들어집니다. 지시문을 수정하면 함께 바뀝니다.</li>
                         </ul>
@@ -3588,101 +3733,92 @@ export default function App() {
                               const lines = (turn.lines && turn.lines.length > 0) ? turn.lines : [{ sentence: turn.sentence || '', kor: turn.kor || '', audio_id: turn.audio_id || '', hasBlank: turn.hasBlank || false, muteTargets: turn.muteTargets }];
                               return (
                              <div key={dialIdx} className="p-3 border rounded-xl relative group shadow-sm bg-white border-purple-200 space-y-3">
-                                <button onClick={() => removeSentence(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 턴(화자 전체) 삭제">✕</button>
+                                <button onClick={() => removeSentence(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[12px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 턴(화자 전체) 삭제">✕</button>
 
                                 <div className="flex items-center gap-2">
-                                   <select value={turn.speaker || 'A'} onChange={e => handleSentenceChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-purple-900 rounded bg-purple-100 border border-purple-300 outline-none cursor-pointer">
+                                   <select value={turn.speaker || 'A'} onChange={e => handleSentenceChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-sm font-bold text-purple-900 rounded bg-purple-100 border border-purple-300 outline-none cursor-pointer">
                                       <option value="A">A 역할</option>
                                       <option value="B">B 역할</option>
                                    </select>
-                                   <span className="text-[10px] text-gray-400">이 턴 안에서 여러 줄(각각 별도 오디오)을 이어서 말하게 할 수 있습니다.</span>
+                                   <span className="text-[12px] text-gray-400">이 턴 안에서 여러 줄(각각 별도 오디오)을 이어서 말하게 할 수 있습니다.</span>
                                 </div>
 
                                 {lines.map((line, lineIdx) => (
                                   <div key={lineIdx} className={`p-2.5 border rounded-lg relative group/line ${line.hasBlank ? 'bg-indigo-50 border-indigo-200' : 'bg-gray-50 border-gray-200'}`}>
                                      {lines.length > 1 && (
-                                        <button onClick={() => removeDialogueLine(dialIdx, lineIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover/line:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 줄만 삭제">✕</button>
+                                        <button onClick={() => removeDialogueLine(dialIdx, lineIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[12px] opacity-0 group-hover/line:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 줄만 삭제">✕</button>
                                      )}
-                                     <div className="flex justify-between items-center mb-2">
-                                        <span className="text-[10px] font-bold text-gray-500">{lineIdx + 1}번째 줄</span>
-                                        <label className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 cursor-pointer bg-indigo-100 px-2 py-1 rounded">
-                                          <input type="checkbox" checked={line.hasBlank || false} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'hasBlank', e.target.checked)} className="cursor-pointer" />
-                                          빈칸(오디오 묵음) 지정
-                                        </label>
-                                     </div>
+                                     <span className="text-[12px] font-bold text-gray-500 block mb-1">{lineIdx + 1}번째 줄</span>
 
-                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">영어 대사</label>
+                                     {/* 💡 [사용성 개선] B형 강조색 버튼과 동일하게 "영어 대사" 라벨 줄에 색상 버튼을 인라인 배치.
+                                         체크박스와 감싸기 버튼 없이, 텍스트 선택 → 색상 클릭 1번으로 빈칸 지정+색상까지 끝난다. */}
+                                     <div className="flex items-center justify-between mb-1">
+                                        <label className="block text-emerald-700 text-[13px] font-bold">영어 대사</label>
+                                        <div className="flex items-center gap-1">
+                                           <span className="text-[11px] text-gray-400 mr-0.5">빈칸: 부분 선택 후 클릭</span>
+                                           {EMP_COLORS.map((c, colorIdx) => (
+                                              <button
+                                                 key={c.cls}
+                                                 type="button"
+                                                 onClick={() => applyBlankColorAction(dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`], line.sentence || '', colorIdx, fields => handleDialogueLineFieldsChange(dialIdx, lineIdx, fields))}
+                                                 className={`w-4 h-4 rounded-full border border-white shadow ring-1 ${line.hasBlank && (line.blankColor ?? 0) === colorIdx ? 'ring-gray-700' : 'ring-gray-200 hover:ring-gray-400'}`}
+                                                 style={{ backgroundColor: c.hex }}
+                                                 title={`${c.label}으로 빈칸 지정/변경`}
+                                              />
+                                           ))}
+                                           {line.hasBlank && (
+                                              <button
+                                                 type="button"
+                                                 onClick={() => handleDialogueLineFieldsChange(dialIdx, lineIdx, { sentence: stripBlankBracket(line.sentence), hasBlank: false })}
+                                                 className="text-[11px] text-gray-400 hover:text-red-500 ml-1"
+                                                 title="빈칸 해제"
+                                              >
+                                                 ✕ 해제
+                                              </button>
+                                           )}
+                                        </div>
+                                     </div>
                                      <textarea
                                         ref={el => { dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`] = el; }}
                                         value={line.sentence || ''}
                                         onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', e.target.value)}
-                                        className={`w-full p-2 text-xs border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`}
+                                        className={`w-full p-2 text-sm border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`}
                                         placeholder="영어 대사 입력"
                                      />
 
+                                     {/* 💡 [실제 view01.html buildRolePlay()로 확인 완료] "묵음 인덱스" 입력창은
+                                         삭제했다 — 마스터 템플릿은 muteTargets 배열의 실제 값(어떤 인덱스인지)은
+                                         전혀 읽지 않고, hasBlank && muteTargets.length > 0(=값이 비어있지 않은지)
+                                         만 검사해서 빈칸 모드일 때 "{오디오 ID}_묵음.mp3" 파일로 통째로 바꿔친다.
+                                         export 시 muteTargets는 항상 [0]으로 고정해서 내보내면 충분하다(handleExportZip 참고). */}
                                      {line.hasBlank && (
-                                        <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
-                                           <div className="flex items-center justify-between mb-1">
-                                              <label className="text-amber-800 text-[11px] font-bold">빈칸으로 지정할 구간 [ ]</label>
-                                              <button
-                                                 type="button"
-                                                 onClick={() => applyBracketToSelection(dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`], line.sentence || '', v => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', v))}
-                                                 className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded hover:bg-amber-200"
-                                              >
-                                                 위에서 선택한 부분 [ ]로 감싸기
-                                              </button>
-                                           </div>
-                                           <p className="text-[10px] leading-relaxed text-amber-700 mb-1.5">
-                                              위 "영어 대사"에서 정답(빈칸)이 될 부분을 마우스로 선택한 뒤 이 버튼을 누르면 <span className="font-mono">[ ]</span>로 감싸집니다.
-                                              마스터 템플릿이 이 대괄호 구간을 처음엔 안 보이게, 정답 확인 시엔 아래 색으로 강조해서 보여줍니다.
-                                           </p>
-                                           <div className="flex items-center gap-1 mb-2">
-                                              <span className="text-[10px] text-amber-700 mr-1">정답 강조색:</span>
-                                              {EMP_COLORS.map((c, colorIdx) => (
-                                                 <button
-                                                    key={c.cls}
-                                                    type="button"
-                                                    onClick={() => handleDialogueLineChange(dialIdx, lineIdx, 'blankColor', colorIdx)}
-                                                    className={`w-4 h-4 rounded-full shadow ring-2 ${(line.blankColor ?? 0) === colorIdx ? 'ring-gray-700' : 'ring-gray-200'}`}
-                                                    style={{ backgroundColor: c.hex }}
-                                                    title={c.label}
-                                                 />
-                                              ))}
-                                           </div>
-                                           <label className="block text-indigo-800 text-[11px] font-bold mb-1">
-                                              오디오 묵음 타겟 (muteTargets) <span className="text-indigo-500 font-normal ml-1">※ 싱크 인덱스 입력</span>
-                                           </label>
-                                           <input type="text" value={line.muteTargets !== undefined ? line.muteTargets : '0'} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'muteTargets', e.target.value)} className="w-full p-1.5 text-xs border border-indigo-300 rounded outline-none font-mono bg-white" placeholder="예: 0 또는 0, 1" />
-                                           <p className="mt-1.5 text-[10px] leading-relaxed text-indigo-700">
-                                              ⚠️ 별도 파일명을 지정하는 항목이 아닙니다. 마스터 템플릿은 아래 "오디오 ID"와 같은 이름에{' '}
-                                              <span className="font-mono font-bold">_묵음</span>만 붙인 파일을 자동으로 찾습니다.
-                                              {line.audio_id ? <> 예: <span className="font-mono font-bold">{line.audio_id}_묵음.mp3</span></> : ' 예: L1_012_CommB_eg_05_묵음.mp3'}
-                                              {' '}파일을 미디어 폴더에 함께 준비해 주세요.
-                                           </p>
-                                        </div>
+                                        <p className="mb-2 text-[12px] text-indigo-500 leading-snug">
+                                           ⚠️ 빈칸 모드에서 <span className="font-mono font-bold">{line.audio_id ? `${line.audio_id}_묵음.mp3` : 'L1_012_CommB_eg_05_묵음.mp3'}</span> 파일을 자동으로 재생합니다.
+                                           이 파일을 미디어 폴더에 준비해 주세요(확장자 없이 오디오 ID만 입력하면 됩니다).
+                                        </p>
                                      )}
 
-                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">한글 해석 (kor)</label>
-                                     <textarea value={line.kor || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력" />
+                                     <label className="block text-emerald-700 text-[13px] font-bold mb-1">한글 해석 (kor)</label>
+                                     <textarea value={line.kor || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'kor', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력" />
 
-                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">오디오 ID</label>
-                                     <input type="text" value={line.audio_id || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L1_012_CommB_eg_05" />
+                                     <label className="block text-emerald-700 text-[13px] font-bold mb-1">오디오 ID</label>
+                                     <input type="text" value={line.audio_id || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L1_012_CommB_eg_05" />
                                   </div>
                                 ))}
 
-                                <button onClick={() => addDialogueLine(dialIdx)} className="w-full py-1.5 border border-dashed border-indigo-300 text-indigo-600 text-[11px] font-bold rounded-lg hover:bg-indigo-50 transition">+ 같은 화자로 줄 추가 (오디오 분리)</button>
+                                <button onClick={() => addDialogueLine(dialIdx)} className="w-full py-1.5 border border-dashed border-indigo-300 text-indigo-600 text-[13px] font-bold rounded-lg hover:bg-indigo-50 transition">+ 같은 화자로 줄 추가 (오디오 분리)</button>
                              </div>
                               );
                            })}
-                           <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-purple-300 text-purple-600 text-xs font-bold rounded-xl hover:bg-purple-100 transition">+ 새로운 턴(화자 차례) 추가</button>
+                           <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-purple-300 text-purple-600 text-sm font-bold rounded-xl hover:bg-purple-100 transition">+ 새로운 턴(화자 차례) 추가</button>
                         </div>
  
                         {/* 표 퀴즈 에디터 영역 */}
                         <div className="border-b border-purple-200 pb-2 mb-3 mt-8">
-                           <h3 className="font-bold text-sm text-purple-800">📊 우측 표 퀴즈 (Table Quiz)</h3>
+                           <h3 className="font-bold text-base text-purple-800">📊 우측 표 퀴즈 (Table Quiz)</h3>
                         </div>
 
-                        <ul className="text-[10px] leading-relaxed text-gray-400 -mt-1 mb-3 space-y-0.5 list-disc list-inside">
+                        <ul className="text-[12px] leading-relaxed text-gray-400 -mt-1 mb-3 space-y-0.5 list-disc list-inside">
                            <li>헤더/고정 행 텍스트는 이미지에 표가 함께 있었으면 AI가 자동으로 읽어 채워둡니다. 오디오 ID는 이미지만으로 알 수 없어 항상 직접 입력해야 합니다.</li>
                            <li>자동 인식 결과는 오탈자가 있을 수 있으니 원본 이미지와 대조해서 확인해 주세요.</li>
                         </ul>
@@ -3690,27 +3826,27 @@ export default function App() {
                         <div className="space-y-4">
                            {/* 1. 헤더 속성 */}
                            <div className="space-y-2">
-                              <h4 className="text-[11px] font-bold text-gray-700">1. 헤더 (Headers)</h4>
+                              <h4 className="text-[13px] font-bold text-gray-700">1. 헤더 (Headers)</h4>
                               {(activeData.tableQuiz?.headers || []).map((h, i) => (
                                  <div key={`h-${i}`} className="flex gap-2">
-                                     <input type="text" value={h.text || ''} onChange={e => handleTableQuizChange('headers', i, 'text', e.target.value)} className="w-1/2 p-1.5 text-xs border border-gray-300 rounded outline-none focus:border-emerald-500 bg-white" placeholder={`열 ${i+1} 타이틀`} />
-                                     <input type="text" value={h.audioId || ''} onChange={e => handleTableQuizChange('headers', i, 'audioId', e.target.value)} className="w-1/2 p-1.5 text-xs border border-gray-300 rounded font-mono outline-none focus:border-emerald-500 bg-white" placeholder="오디오 ID" />
+                                     <input type="text" value={h.text || ''} onChange={e => handleTableQuizChange('headers', i, 'text', e.target.value)} className="w-1/2 p-1.5 text-sm border border-gray-300 rounded outline-none focus:border-emerald-500 bg-white" placeholder={`열 ${i+1} 타이틀`} />
+                                     <input type="text" value={h.audioId || ''} onChange={e => handleTableQuizChange('headers', i, 'audioId', e.target.value)} className="w-1/2 p-1.5 text-sm border border-gray-300 rounded font-mono outline-none focus:border-emerald-500 bg-white" placeholder="오디오 ID" />
                                  </div>
                               ))}
                            </div>
  
                            {/* 2. 고정 행 속성 */}
                            <div className="space-y-2 mt-4">
-                              <h4 className="text-[11px] font-bold text-gray-700">2. 고정 행 텍스트 (Static Row)</h4>
+                              <h4 className="text-[13px] font-bold text-gray-700">2. 고정 행 텍스트 (Static Row)</h4>
                               <div className="flex gap-2">
                                  {(activeData.tableQuiz?.staticRow || []).map((col, i) => {
                                     const textVal = typeof col === 'string' ? col : (col.text || '');
                                     const audioVal = typeof col === 'string' ? '' : (col.audioId || '');
                                     return (
                                        <div key={`s-${i}`} className="flex flex-col gap-1 w-1/3">
-                                          <span className="text-[10px] font-bold text-gray-400">열 {i+1} 텍스트/오디오</span>
-                                          <input type="text" value={textVal} onChange={e => handleTableQuizChange('staticRow', i, 'text', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded outline-none focus:border-emerald-500 bg-white" placeholder={INIT_ROLEPLAY_DATA.tableQuiz.staticRow[i]?.text || "고정 텍스트"} />
-                                          <input type="text" value={audioVal} onChange={e => handleTableQuizChange('staticRow', i, 'audioId', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded font-mono outline-none focus:border-emerald-500 bg-white" placeholder="오디오 ID" />
+                                          <span className="text-[12px] font-bold text-gray-400">열 {i+1} 텍스트/오디오</span>
+                                          <input type="text" value={textVal} onChange={e => handleTableQuizChange('staticRow', i, 'text', e.target.value)} className="w-full p-1.5 text-sm border border-gray-300 rounded outline-none focus:border-emerald-500 bg-white" placeholder={INIT_ROLEPLAY_DATA.tableQuiz.staticRow[i]?.text || "고정 텍스트"} />
+                                          <input type="text" value={audioVal} onChange={e => handleTableQuizChange('staticRow', i, 'audioId', e.target.value)} className="w-full p-1.5 text-sm border border-gray-300 rounded font-mono outline-none focus:border-emerald-500 bg-white" placeholder="오디오 ID" />
                                        </div>
                                     );
                                  })}
@@ -3719,10 +3855,10 @@ export default function App() {
  
                            {/* 3. 학생 입력 빈칸(행) 개수 조절 UI */}
                            <div className="flex justify-between items-center mt-6 p-1 border-t border-dashed border-gray-300 pt-5">
-                              <h4 className="text-[11px] font-bold text-gray-700 m-0">3. 퀴즈 입력 행 (Input Rows) 개수</h4>
+                              <h4 className="text-[13px] font-bold text-gray-700 m-0">3. 퀴즈 입력 행 (Input Rows) 개수</h4>
                               <div className="flex items-center gap-1">
                                  <button onClick={removeTableQuizRow} disabled={(activeData.tableQuiz?.rowCount || 3) <= 1} className="w-6 h-6 flex items-center justify-center bg-gray-200 text-gray-700 rounded font-bold hover:bg-gray-300 disabled:opacity-50 transition">-</button>
-                                 <span className="w-10 text-center text-xs font-bold text-gray-800">{activeData.tableQuiz?.rowCount || 3}</span>
+                                 <span className="w-10 text-center text-sm font-bold text-gray-800">{activeData.tableQuiz?.rowCount || 3}</span>
                                  <button onClick={addTableQuizRow} className="w-6 h-6 flex items-center justify-center bg-gray-200 text-gray-700 rounded font-bold hover:bg-gray-300 transition">+</button>
                               </div>
                            </div>
@@ -3737,9 +3873,9 @@ export default function App() {
                   {contentType === 'roleplay_c' && (
                      <>
                         <div className="border-b border-fuchsia-200 pb-2 mb-3">
-                           <h3 className="font-bold text-sm text-fuchsia-800">📝 대화 스크립트 작성 (C형 · 현재 페이지 {activeViewIdx + 1})</h3>
+                           <h3 className="font-bold text-base text-fuchsia-800">📝 대화 스크립트 작성 (C형 · 현재 페이지 {activeViewIdx + 1})</h3>
                         </div>
-                        <ul className="text-[10px] leading-relaxed text-gray-400 -mt-2 mb-3 space-y-0.5 list-disc list-inside">
+                        <ul className="text-[12px] leading-relaxed text-gray-400 -mt-2 mb-3 space-y-0.5 list-disc list-inside">
                            <li>C형은 표 퀴즈 대신, 화면 하단 화살표/점(dots)으로 넘겨보는 여러 "페이지"(대화 갈래)로 구성됩니다. 페이지 전환·추가·삭제는 캔버스 상단 탭(Page 1, Page 2 ...)에서 합니다.</li>
                            <li>실제 콘텐츠에서는 하단의 [저장] 버튼을 누르면 그 자리에서 [다시 하기] 버튼으로 바뀌어 나타납니다. 캔버스는 최초 진입 상태([저장]만 표시)만 보여줍니다.</li>
                            <li>화면 하단 스크린리더용 안내문(hiddenText)은 "공통 설정" 탭의 지시문(instruction)을 그대로 재사용해 자동으로 만들어집니다. 지시문을 수정하면 함께 바뀝니다.</li>
@@ -3749,103 +3885,94 @@ export default function App() {
                               const lines = (turn.lines && turn.lines.length > 0) ? turn.lines : [{ sentence: turn.sentence || '', kor: turn.kor || '', audio_id: turn.audio_id || '', hasBlank: turn.hasBlank || false, muteTargets: turn.muteTargets }];
                               return (
                              <div key={dialIdx} className="p-3 border rounded-xl relative group shadow-sm bg-white border-fuchsia-200 space-y-3">
-                                <button onClick={() => removeSentence(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 턴(화자 전체) 삭제">✕</button>
+                                <button onClick={() => removeSentence(dialIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[12px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 턴(화자 전체) 삭제">✕</button>
 
                                 <div className="flex items-center gap-2">
-                                   <select value={turn.speaker || 'A'} onChange={e => handleSentenceChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-xs font-bold text-fuchsia-900 rounded bg-fuchsia-100 border border-fuchsia-300 outline-none cursor-pointer">
+                                   <select value={turn.speaker || 'A'} onChange={e => handleSentenceChange(dialIdx, 'speaker', e.target.value)} className="p-1 text-sm font-bold text-fuchsia-900 rounded bg-fuchsia-100 border border-fuchsia-300 outline-none cursor-pointer">
                                       <option value="A">A 역할</option>
                                       <option value="B">B 역할</option>
                                    </select>
-                                   <span className="text-[10px] text-gray-400">이 턴 안에서 여러 줄(각각 별도 오디오)을 이어서 말하게 할 수 있습니다.</span>
+                                   <span className="text-[12px] text-gray-400">이 턴 안에서 여러 줄(각각 별도 오디오)을 이어서 말하게 할 수 있습니다.</span>
                                 </div>
 
                                 {lines.map((line, lineIdx) => (
                                   <div key={lineIdx} className={`p-2.5 border rounded-lg relative group/line ${line.hasBlank ? 'bg-indigo-50 border-indigo-200' : 'bg-gray-50 border-gray-200'}`}>
                                      {lines.length > 1 && (
-                                        <button onClick={() => removeDialogueLine(dialIdx, lineIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover/line:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 줄만 삭제">✕</button>
+                                        <button onClick={() => removeDialogueLine(dialIdx, lineIdx)} className="absolute -right-2 -top-2 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[12px] opacity-0 group-hover/line:opacity-100 transition-opacity hover:bg-red-500 hover:text-white" title="이 줄만 삭제">✕</button>
                                      )}
-                                     <div className="flex justify-between items-center mb-2">
-                                        <span className="text-[10px] font-bold text-gray-500">{lineIdx + 1}번째 줄</span>
-                                        <label className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 cursor-pointer bg-indigo-100 px-2 py-1 rounded">
-                                          <input type="checkbox" checked={line.hasBlank || false} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'hasBlank', e.target.checked)} className="cursor-pointer" />
-                                          빈칸(오디오 묵음) 지정
-                                        </label>
-                                     </div>
+                                     <span className="text-[12px] font-bold text-gray-500 block mb-1">{lineIdx + 1}번째 줄</span>
 
-                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">영어 대사</label>
+                                     {/* 💡 [사용성 개선] B형 강조색 버튼과 동일하게 "영어 대사" 라벨 줄에 색상 버튼을 인라인 배치.
+                                         체크박스와 감싸기 버튼 없이, 텍스트 선택 → 색상 클릭 1번으로 빈칸 지정+색상까지 끝난다. */}
+                                     <div className="flex items-center justify-between mb-1">
+                                        <label className="block text-emerald-700 text-[13px] font-bold">영어 대사</label>
+                                        <div className="flex items-center gap-1">
+                                           <span className="text-[11px] text-gray-400 mr-0.5">빈칸: 부분 선택 후 클릭</span>
+                                           {EMP_COLORS.map((c, colorIdx) => (
+                                              <button
+                                                 key={c.cls}
+                                                 type="button"
+                                                 onClick={() => applyBlankColorAction(dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`], line.sentence || '', colorIdx, fields => handleDialogueLineFieldsChange(dialIdx, lineIdx, fields))}
+                                                 className={`w-4 h-4 rounded-full border border-white shadow ring-1 ${line.hasBlank && (line.blankColor ?? 0) === colorIdx ? 'ring-gray-700' : 'ring-gray-200 hover:ring-gray-400'}`}
+                                                 style={{ backgroundColor: c.hex }}
+                                                 title={`${c.label}으로 빈칸 지정/변경`}
+                                              />
+                                           ))}
+                                           {line.hasBlank && (
+                                              <button
+                                                 type="button"
+                                                 onClick={() => handleDialogueLineFieldsChange(dialIdx, lineIdx, { sentence: stripBlankBracket(line.sentence), hasBlank: false })}
+                                                 className="text-[11px] text-gray-400 hover:text-red-500 ml-1"
+                                                 title="빈칸 해제"
+                                              >
+                                                 ✕ 해제
+                                              </button>
+                                           )}
+                                        </div>
+                                     </div>
                                      <textarea
                                         ref={el => { dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`] = el; }}
                                         value={line.sentence || ''}
                                         onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', e.target.value)}
-                                        className={`w-full p-2 text-xs border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`}
+                                        className={`w-full p-2 text-sm border rounded-lg mb-2 outline-none resize-none h-16 ${line.hasBlank ? 'border-indigo-300 focus:ring-1 focus:ring-indigo-500 bg-white' : 'border-gray-300 focus:ring-1 focus:ring-gray-500'}`}
                                         placeholder="영어 대사 입력"
                                      />
 
+                                     {/* 💡 [실제 view01.html buildRolePlay()로 확인 완료] "묵음 인덱스" 입력창은
+                                         삭제했다 — 마스터 템플릿은 muteTargets 배열의 실제 값(어떤 인덱스인지)은
+                                         전혀 읽지 않고, hasBlank && muteTargets.length > 0(=값이 비어있지 않은지)
+                                         만 검사해서 빈칸 모드일 때 "{오디오 ID}_묵음.mp3" 파일로 통째로 바꿔친다.
+                                         export 시 muteTargets는 항상 [0]으로 고정해서 내보내면 충분하다(handleExportZip 참고). */}
                                      {line.hasBlank && (
-                                        <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
-                                           <div className="flex items-center justify-between mb-1">
-                                              <label className="text-amber-800 text-[11px] font-bold">빈칸으로 지정할 구간 [ ]</label>
-                                              <button
-                                                 type="button"
-                                                 onClick={() => applyBracketToSelection(dialogueLineSentenceRefs.current[`${dialIdx}-${lineIdx}`], line.sentence || '', v => handleDialogueLineChange(dialIdx, lineIdx, 'sentence', v))}
-                                                 className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded hover:bg-amber-200"
-                                              >
-                                                 위에서 선택한 부분 [ ]로 감싸기
-                                              </button>
-                                           </div>
-                                           <p className="text-[10px] leading-relaxed text-amber-700 mb-1.5">
-                                              위 "영어 대사"에서 정답(빈칸)이 될 부분을 마우스로 선택한 뒤 이 버튼을 누르면 <span className="font-mono">[ ]</span>로 감싸집니다.
-                                              마스터 템플릿이 이 대괄호 구간을 처음엔 안 보이게, 정답 확인 시엔 아래 색으로 강조해서 보여줍니다.
-                                           </p>
-                                           <div className="flex items-center gap-1 mb-2">
-                                              <span className="text-[10px] text-amber-700 mr-1">정답 강조색:</span>
-                                              {EMP_COLORS.map((c, colorIdx) => (
-                                                 <button
-                                                    key={c.cls}
-                                                    type="button"
-                                                    onClick={() => handleDialogueLineChange(dialIdx, lineIdx, 'blankColor', colorIdx)}
-                                                    className={`w-4 h-4 rounded-full shadow ring-2 ${(line.blankColor ?? 0) === colorIdx ? 'ring-gray-700' : 'ring-gray-200'}`}
-                                                    style={{ backgroundColor: c.hex }}
-                                                    title={c.label}
-                                                 />
-                                              ))}
-                                           </div>
-                                           <label className="block text-indigo-800 text-[11px] font-bold mb-1">
-                                              오디오 묵음 타겟 (muteTargets) <span className="text-indigo-500 font-normal ml-1">※ 싱크 인덱스 입력</span>
-                                           </label>
-                                           <input type="text" value={line.muteTargets !== undefined ? line.muteTargets : '0'} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'muteTargets', e.target.value)} className="w-full p-1.5 text-xs border border-indigo-300 rounded outline-none font-mono bg-white" placeholder="예: 0 또는 0, 1" />
-                                           <p className="mt-1.5 text-[10px] leading-relaxed text-indigo-700">
-                                              ⚠️ 별도 파일명을 지정하는 항목이 아닙니다. 마스터 템플릿은 아래 "오디오 ID"와 같은 이름에{' '}
-                                              <span className="font-mono font-bold">_묵음</span>만 붙인 파일을 자동으로 찾습니다.
-                                              {line.audio_id ? <> 예: <span className="font-mono font-bold">{line.audio_id}_묵음.mp3</span></> : ' 예: L1_012_CommB_eg_05_묵음.mp3'}
-                                              {' '}파일을 미디어 폴더에 함께 준비해 주세요.
-                                           </p>
-                                        </div>
+                                        <p className="mb-2 text-[12px] text-indigo-500 leading-snug">
+                                           ⚠️ 빈칸 모드에서 <span className="font-mono font-bold">{line.audio_id ? `${line.audio_id}_묵음.mp3` : 'L1_012_CommB_eg_05_묵음.mp3'}</span> 파일을 자동으로 재생합니다.
+                                           이 파일을 미디어 폴더에 준비해 주세요(확장자 없이 오디오 ID만 입력하면 됩니다).
+                                        </p>
                                      )}
 
-                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">한글 해석 (kor)</label>
-                                     <textarea value={line.kor || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'kor', e.target.value)} className="w-full p-2 text-xs border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력" />
+                                     <label className="block text-emerald-700 text-[13px] font-bold mb-1">한글 해석 (kor)</label>
+                                     <textarea value={line.kor || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'kor', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg mb-2 focus:ring-1 focus:ring-emerald-500 outline-none resize-none h-12 bg-white" placeholder="한글 해석 입력" />
 
-                                     <label className="block text-emerald-700 text-[11px] font-bold mb-1">오디오 ID</label>
-                                     <input type="text" value={line.audio_id || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-xs border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L1_012_CommB_eg_05" />
+                                     <label className="block text-emerald-700 text-[13px] font-bold mb-1">오디오 ID</label>
+                                     <input type="text" value={line.audio_id || ''} onChange={e => handleDialogueLineChange(dialIdx, lineIdx, 'audio_id', e.target.value)} className="w-full p-1.5 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-emerald-500 outline-none font-mono bg-white" placeholder="ex: L1_012_CommB_eg_05" />
                                   </div>
                                 ))}
 
-                                <button onClick={() => addDialogueLine(dialIdx)} className="w-full py-1.5 border border-dashed border-indigo-300 text-indigo-600 text-[11px] font-bold rounded-lg hover:bg-indigo-50 transition">+ 같은 화자로 줄 추가 (오디오 분리)</button>
+                                <button onClick={() => addDialogueLine(dialIdx)} className="w-full py-1.5 border border-dashed border-indigo-300 text-indigo-600 text-[13px] font-bold rounded-lg hover:bg-indigo-50 transition">+ 같은 화자로 줄 추가 (오디오 분리)</button>
                              </div>
                               );
                            })}
-                           <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-fuchsia-300 text-fuchsia-600 text-xs font-bold rounded-xl hover:bg-fuchsia-100 transition">+ 새로운 턴(화자 차례) 추가</button>
+                           <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-fuchsia-300 text-fuchsia-600 text-sm font-bold rounded-xl hover:bg-fuchsia-100 transition">+ 새로운 턴(화자 차례) 추가</button>
                         </div>
 
                         {/* 💡 페이지(대화 갈래) 관리 — B형 씬 관리 패턴과 동일하게, 현재 페이지 삭제는
                             여기서도 가능하게 해서 캔버스 상단 탭까지 안 가도 되게 한다. */}
                         <div className="border-t border-dashed border-gray-300 pt-4 mt-6 flex items-center justify-between">
-                           <span className="text-[11px] text-gray-500">현재 페이지({activeViewIdx + 1}/{(pageData || []).length})를 삭제하려면:</span>
+                           <span className="text-[13px] text-gray-500">현재 페이지({activeViewIdx + 1}/{(pageData || []).length})를 삭제하려면:</span>
                            <button
                               onClick={() => deletePageC(activeViewIdx)}
                               disabled={(pageData || []).length <= 1}
-                              className="text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                              className="text-[13px] font-bold text-red-600 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
                            >
                               이 페이지 삭제
                            </button>
@@ -3857,33 +3984,33 @@ export default function App() {
               ) : (
                 <div className="animate-fade-in space-y-6">
                   <section>
-                    <h3 className="font-bold text-sm text-indigo-800 border-b border-indigo-100 pb-2 mb-3 flex items-center gap-1"><span>🏷️</span> 상단 헤더 (Header)</h3>
+                    <h3 className="font-bold text-base text-indigo-800 border-b border-indigo-100 pb-2 mb-3 flex items-center gap-1"><span>🏷️</span> 상단 헤더 (Header)</h3>
                     <div className="space-y-3">
                       <div className="flex gap-2">
                         <div className="w-1/4">
-                          <label className="block text-gray-500 text-[11px] font-bold mb-1">알파벳</label>
-                          <input type="text" value={globalData.header.letter} onChange={e => updateGlobalData('header', 'letter', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-center bg-white" maxLength={1} placeholder="A" />
+                          <label className="block text-gray-500 text-[13px] font-bold mb-1">알파벳</label>
+                          <input type="text" value={globalData.header.letter} onChange={e => updateGlobalData('header', 'letter', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-center bg-white" maxLength={1} placeholder="A" />
                         </div>
                         <div className="flex-1">
-                          <label className="block text-gray-500 text-[11px] font-bold mb-1">타이틀 텍스트</label>
-                          <input type="text" value={globalData.header.text} onChange={e => updateGlobalData('header', 'text', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white" placeholder="Understand" />
+                          <label className="block text-gray-500 text-[13px] font-bold mb-1">타이틀 텍스트</label>
+                          <input type="text" value={globalData.header.text} onChange={e => updateGlobalData('header', 'text', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white" placeholder="Understand" />
                         </div>
                       </div>
                       <div>
-                        <label className="block text-gray-500 text-[11px] font-bold mb-1">지시문</label>
-                        <textarea value={globalData.header.instruction} onChange={e => updateGlobalData('header', 'instruction', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-16 bg-white" placeholder="다음을 보고..." />
+                        <label className="block text-gray-500 text-[13px] font-bold mb-1">지시문</label>
+                        <textarea value={globalData.header.instruction} onChange={e => updateGlobalData('header', 'instruction', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-16 bg-white" placeholder="다음을 보고..." />
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                          <div>
-                            <label className="block text-gray-500 text-[11px] font-bold mb-1">테마 번호 (color)</label>
-                            <input type="number" min="0" max="14" value={globalData.header.color} onChange={e => updateGlobalData('header', 'color', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white" />
+                            <label className="block text-gray-500 text-[13px] font-bold mb-1">테마 번호 (color)</label>
+                            <input type="number" min="0" max="14" value={globalData.header.color} onChange={e => updateGlobalData('header', 'color', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white" />
                          </div>
                          
                          {/* 💡 [분기] 롤플레이일 때는 비디오 버튼 속성을 렌더링하지 않음 */}
                          {contentType === 'understand' && (
                            <div>
-                              <label className="block text-gray-500 text-[11px] font-bold mb-1">영상 버튼 대체텍스트</label>
-                              <input type="text" value={globalData.header.btn_aria_label} onChange={e => updateGlobalData('header', 'btn_aria_label', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white" />
+                              <label className="block text-gray-500 text-[13px] font-bold mb-1">영상 버튼 대체텍스트</label>
+                              <input type="text" value={globalData.header.btn_aria_label} onChange={e => updateGlobalData('header', 'btn_aria_label', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white" />
                            </div>
                          )}
                       </div>
@@ -3893,15 +4020,22 @@ export default function App() {
                   {/* 💡 [분기] 롤플레이일 때는 비디오 팝업 정보 섹션을 렌더링하지 않음 */}
                   {contentType === 'understand' && (
                     <section>
-                      <h3 className="font-bold text-sm text-indigo-800 border-b border-indigo-100 pb-2 mb-3 flex items-center gap-1"><span>🎬</span> 비디오 정보 (Video)</h3>
+                      <h3 className="font-bold text-base text-indigo-800 border-b border-indigo-100 pb-2 mb-3 flex items-center gap-1"><span>🎬</span> 비디오 정보 (Video)</h3>
                       <div className="space-y-3">
                         <div>
-                          <label className="block text-gray-500 text-[11px] font-bold mb-1">비디오 파일명 (video_file_name)</label>
-                          <input type="text" value={globalData.video_file_name || ''} onChange={e => updateGlobalData(null, 'video_file_name', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono bg-white" placeholder="예: bridge_video.mp4" />
+                          <label className="block text-gray-500 text-[13px] font-bold mb-1">비디오 파일명 (video_file_name)</label>
+                          <input type="text" value={globalData.video_file_name || ''} onChange={e => updateGlobalData(null, 'video_file_name', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono bg-white" placeholder="예: 중등영어2_Bridge_L1" />
+                          {/* 💡 [사용성 개선] 확장자(.mp4)·화질 접미사(_720)를 붙이지 않고 순수 파일명만
+                              입력하도록 안내 — 마스터 템플릿이 이 값 뒤에 "_720.mp4"를 자동으로 붙여
+                              media/video/ 폴더에서 파일을 찾는다. */}
+                          <p className="mt-1 text-[12px] text-indigo-500 leading-snug">
+                              ⚠️ 확장자 없이 순수 파일명만 입력하세요. 자동으로 <span className="font-mono font-bold">_720.mp4</span>를 붙여 찾습니다 →{' '}
+                              <span className="font-mono font-bold">{globalData.video_file_name ? `${globalData.video_file_name}_720.mp4` : '중등영어2_Bridge_L1_720.mp4'}</span>
+                          </p>
                         </div>
                         <div>
-                          <label className="block text-gray-500 text-[11px] font-bold mb-1">비디오 대체 텍스트 (video_aria_label)</label>
-                          <input type="text" value={globalData.video_aria_label} onChange={e => updateGlobalData(null, 'video_aria_label', e.target.value)} className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white" placeholder="영상에 대한 설명 입력" />
+                          <label className="block text-gray-500 text-[13px] font-bold mb-1">비디오 대체 텍스트 (video_aria_label)</label>
+                          <input type="text" value={globalData.video_aria_label} onChange={e => updateGlobalData(null, 'video_aria_label', e.target.value)} className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white" placeholder="영상에 대한 설명 입력" />
                         </div>
                       </div>
                     </section>
@@ -3911,7 +4045,7 @@ export default function App() {
                   {contentType === 'understand' && (
                     <section className="bg-indigo-50 rounded-xl p-4 border border-indigo-100">
                       <div className="flex justify-between items-center mb-3">
-                         <h3 className="font-bold text-sm text-indigo-800 flex items-center gap-1"><span>➕</span> 내용 더 보기</h3>
+                         <h3 className="font-bold text-base text-indigo-800 flex items-center gap-1"><span>➕</span> 내용 더 보기</h3>
                          <label className="relative inline-flex items-center cursor-pointer">
                            <input type="checkbox" className="sr-only peer" checked={globalData.more_content.has_content} onChange={e => updateGlobalData('more_content', 'has_content', e.target.checked)} />
                            <div className="w-9 h-5 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
@@ -3919,8 +4053,8 @@ export default function App() {
                       </div>
                       {globalData.more_content.has_content ? (
                         <div>
-                          <label className="block text-indigo-700 text-[11px] font-bold mb-1">본문 텍스트 (content_text)</label>
-                          <textarea value={globalData.more_content.content_text} onChange={e => updateGlobalData('more_content', 'content_text', e.target.value)} className="w-full border border-indigo-200 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-24 bg-white" placeholder="클릭 시 확장될 본문 내용 입력" />
+                          <label className="block text-indigo-700 text-[13px] font-bold mb-1">본문 텍스트 (content_text)</label>
+                          <textarea value={globalData.more_content.content_text} onChange={e => updateGlobalData('more_content', 'content_text', e.target.value)} className="w-full border border-indigo-200 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-24 bg-white" placeholder="클릭 시 확장될 본문 내용 입력" />
                         </div>
                       ) : null}
                     </section>
@@ -3930,15 +4064,15 @@ export default function App() {
                       나오는 4단계 안내 문구. understand는 이 버튼 자체가 없으므로 숨김. */}
                   {(contentType === 'roleplay_a' || contentType === 'roleplay_b' || contentType === 'roleplay_c') && (
                     <section>
-                      <h3 className="font-bold text-sm text-gray-700 border-b pb-2 mb-3">❓ How to play 안내 문구</h3>
+                      <h3 className="font-bold text-base text-gray-700 border-b pb-2 mb-3">❓ How to play 안내 문구</h3>
                       <div className="space-y-3">
                         {howToPlayLines.map((lines, stepIdx) => (
                           <div key={stepIdx}>
-                            <label className="block text-gray-500 text-[11px] font-bold mb-1">STEP {stepIdx + 1} (줄바꿈으로 여러 줄 구분)</label>
+                            <label className="block text-gray-500 text-[13px] font-bold mb-1">STEP {stepIdx + 1} (줄바꿈으로 여러 줄 구분)</label>
                             <textarea
                               value={lines.join('\n')}
                               onChange={e => updateHowToPlayLine(stepIdx, e.target.value)}
-                              className="w-full border border-gray-300 p-2 text-xs rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-14 bg-white"
+                              className="w-full border border-gray-300 p-2 text-sm rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none resize-none h-14 bg-white"
                             />
                           </div>
                         ))}
@@ -3951,7 +4085,7 @@ export default function App() {
             </div>
 
             <div className="p-4 bg-white border-t border-gray-200 shrink-0">
-              <button onClick={handleExportZip} className="w-full bg-emerald-600 text-white font-bold py-3.5 rounded-xl hover:bg-emerald-700 transition shadow-md text-[15px] flex justify-center items-center gap-2">
+              <button onClick={handleExportZip} className="w-full bg-emerald-600 text-white font-bold py-3.5 rounded-xl hover:bg-emerald-700 transition shadow-md text-[16px] flex justify-center items-center gap-2">
                 <span>📦</span> 무결점 병합 추출 (전체 ZIP 다운로드)
               </button>
             </div>
@@ -3959,5 +4093,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </div>
+    </div>
   );
-}
+}
