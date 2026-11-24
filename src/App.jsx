@@ -170,6 +170,13 @@ const TEMPLATE_UNDERSTAND = [
   { view: "04", bubbles: [{ bubble: { width: 590, x: 190, y: 150, tail_dir: "bottom", tail_pos: 95, tail_tip: "right", bg_color: "#FFFAE2", border_color: "#C6BDA7" }, text: { type: "inline", eng: [{ sentence: "I eat healthy food with olive oil every day.", kor: "저는 올리브 오일을 곁들인 건강에 좋은 음식을 매일 먹습니다.", audio_id: "L2_039_Bridge_A_6" }] } }] }
 ];
 
+// 💡 [신규] Understand 마스터 템플릿은 항상 4컷(view01~04) 고정으로 확정됨(사용자 확인, 2-57) —
+// 마스터 템플릿이 나중에 수정되더라도 이 값 자체는 바뀌지 않는다는 전제. 그래서 등록된 마스터
+// ZIP을 매번 다시 열어 view0X.html 개수를 세는 대신, 이 상수 하나로 비교한다(더 단순하고, AI
+// 분석 직후 바로 경고할 수 있어 더 빠름). 만약 향후 컷 수가 다른 마스터 템플릿을 쓰게 되면 이
+// 값만 바꾸면 된다.
+const UNDERSTAND_MAX_CUTS = 4;
+
 // 💡 컷 안에 말풍선을 하나 더 추가할 때 쓰는 기본값 — 위치는 호출부에서 기준 말풍선 좌표에
 // +40,+40 오프셋을 더해 계산한다(이 객체 자체는 텍스트/색상/꼬리 등 좌표 이외의 기본값만 담당).
 const DEFAULT_NEW_BUBBLE = { width: 400, tail_dir: "bottom", tail_pos: 50, tail_tip: "right", bg_color: "#FFFFFF", border_color: "#000000" };
@@ -286,10 +293,10 @@ function mergeRectsByVisualLine(rects) {
   return lines.map(l => ({ left: l.left, top: l.top, width: l.right - l.left, height: l.bottom - l.top }));
 }
 
-// 💡 [zipper 실측 분리 로직 공용화] 문장이 컨테이너 폭에 걸려 여러 줄로 꺾일 때, 그 줄 너비만큼만
-// 텍스트를 잘라서 "첫 줄"과 "나머지"로 나눈다. Understand의 placeZipperKorean() 포팅 코드와 동일한
-// 원리(숨겨진 probe 요소에 실제로 렌더링해보고 Range.getClientRects()로 줄바꿈 지점을 실측)이며,
-// 롤플레이 A형의 여러 줄(lines) 한글 배치에서도 재사용하기 위해 폰트 파라미터를 받는 공용 함수로 분리했다.
+// 💡 [줄 단위 실측 분리] 문장이 컨테이너 폭에 걸려 여러 줄로 꺾일 때, 그 줄 너비만큼만 텍스트를
+// 잘라서 "첫 줄"과 "나머지"로 나눈다. Understand의 placeZipperKorean() 포팅 코드와 동일한 원리
+// (숨겨진 probe 요소에 실제로 렌더링해보고 Range.getClientRects()로 줄바꿈 지점을 실측)이며,
+// 롤플레이 A/C형의 줄 단위 한글 배치에서도 재사용하기 위해 폰트 파라미터를 받는 공용 함수로 뒀다.
 function splitTextForRowWidth(text, widthPx, fontFamily, fontSizePx, lineHeight, wordBreak) {
   const probe = document.createElement('div');
   probe.style.position = 'absolute';
@@ -331,6 +338,28 @@ function splitTextForRowWidth(text, widthPx, fontFamily, fontSizePx, lineHeight,
   }
   probe.remove();
   return result;
+}
+
+// 💡 [롤플레이 A/C 한글 오버레이 높이 실측] 한글 번역 조각(f.text)이 자기 폭(maxWidth) 안에서
+// 실제로 몇 줄로 꺾이는지까지 반영한 총 렌더링 높이를 잰다. 이 값 + 조각의 top 오프셋을 합쳐야
+// 그 턴 안에서 한글이 실제로 도달하는 최하단(bottom)을 알 수 있다.
+function measureTextBlockHeight(text, widthPx, fontFamily, fontSizePx, lineHeight, wordBreak) {
+  const probe = document.createElement('div');
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  probe.style.left = '-9999px';
+  probe.style.top = '0';
+  probe.style.width = `${widthPx}px`;
+  probe.style.whiteSpace = 'normal';
+  probe.style.fontFamily = fontFamily;
+  probe.style.fontSize = `${fontSizePx}px`;
+  probe.style.lineHeight = String(lineHeight);
+  probe.style.wordBreak = wordBreak;
+  probe.textContent = text;
+  document.body.appendChild(probe);
+  const height = probe.offsetHeight;
+  probe.remove();
+  return height;
 }
 
 // 💡 [강조 표현 색상] 마스터 템플릿(view01.css)에 이미 정의된 3색만 사용한다 — 임의의 색상을 허용하면
@@ -404,9 +433,9 @@ const INIT_ROLEPLAY_B_SCENES = [
   {
     type: "B",
     sceneId: 0,
-    rolePlayImage: "RolePlay_img_0.png",
+    rolePlayImage: "",
     rolePlayImageSrc: "",
-    panelBtnImage: "RolePlay_img_mini_0001.png",
+    panelBtnImage: "",
     panelBtnImageSrc: "",
     panelBtnLabel: "클릭 시 첫 번째 상황의 대화를 볼 수 있습니다.",
     roleA: "A",
@@ -418,9 +447,9 @@ const INIT_ROLEPLAY_B_SCENES = [
   {
     type: "B",
     sceneId: 1,
-    rolePlayImage: "RolePlay_img_1.png",
+    rolePlayImage: "",
     rolePlayImageSrc: "",
-    panelBtnImage: "RolePlay_img_mini_0002.png",
+    panelBtnImage: "",
     panelBtnImageSrc: "",
     panelBtnLabel: "클릭 시 두 번째 상황의 대화를 볼 수 있습니다.",
     roleA: "A",
@@ -432,9 +461,9 @@ const INIT_ROLEPLAY_B_SCENES = [
   {
     type: "B",
     sceneId: 2,
-    rolePlayImage: "RolePlay_img_2.png",
+    rolePlayImage: "",
     rolePlayImageSrc: "",
-    panelBtnImage: "RolePlay_img_mini_0003.png",
+    panelBtnImage: "",
     panelBtnImageSrc: "",
     panelBtnLabel: "클릭 시 세 번째 상황의 대화를 볼 수 있습니다.",
     roleA: "A",
@@ -446,9 +475,9 @@ const INIT_ROLEPLAY_B_SCENES = [
   {
     type: "B",
     sceneId: 3,
-    rolePlayImage: "RolePlay_img_3.png",
+    rolePlayImage: "",
     rolePlayImageSrc: "",
-    panelBtnImage: "RolePlay_img_mini_0004.png",
+    panelBtnImage: "",
     panelBtnImageSrc: "",
     panelBtnLabel: "클릭 시 네 번째 상황의 대화를 볼 수 있습니다.",
     roleA: "A",
@@ -569,14 +598,27 @@ export default function App() {
   // 렌더링된 위치(offsetLeft/Top)를 실측해서 그 줄 바로 아래에 절대위치로 배치하기 위한 참조/상태.
   const rolePlayScriptRef = useRef(null);
   const [roleplayKorFragments, setRoleplayKorFragments] = useState([]);
+  // 💡 [버그 수정] 한글 번역은 position:absolute로 영어 텍스트 흐름 밖에 얹히기 때문에, 턴(턴 박스,
+  // rp-turn-content)의 실제 세로 크기는 영어 텍스트 높이만으로 결정되고 한글은 거기에 전혀 반영되지
+  // 않는다. 영어가 짧고 한글 번역이 길어 아래로 삐져나오면, 다음 턴이 바로 그 아래에서 시작하면서
+  // 앞 턴의 한글과 겹쳐 보이고, 여러 턴이 겹치면 "영어들이 전부 나열된 뒤 한글들이 뭉쳐서 나온다"는
+  // 것처럼 보인다. turnIdx별로 한글이 실제로 차지하는 최대 하단(bottom)을 같이 계산해두고, 영어
+  // 자체 높이보다 더 필요하면 그 차액만큼을 컨테이너 paddingBottom으로 얹어 다음 턴과 겹치지 않게 한다.
+  const [roleplayTurnExtraPad, setRoleplayTurnExtraPad] = useState({});
   // 💡 [롤플레이 C형 — A형 ref/state를 그대로 복제] 캔버스 렌더링·한글 배치는 A형과 물리적으로
   // 분리된 별도 블록을 쓰므로, DOM 참조와 실측 결과도 A형과 공유하지 않고 따로 둔다.
   const rolePlayScriptRefC = useRef(null);
   const [roleplayCKorFragments, setRoleplayCKorFragments] = useState([]);
+  const [roleplayCTurnExtraPad, setRoleplayCTurnExtraPad] = useState({});
 
-  // 💡 [롤플레이 B 전용 구역] 마스터 템플릿(view01.js/css) 확인 결과, B형은 A형과 달리 실측
-  // 기반 절대배치가 아니라 .sentence-group(flex-column) 구조로 영어 문장 바로 아래에 한글이
-  // 자연스럽게 흐른다 — 별도의 측정 로직이 필요 없다(아래 JSX에서 직접 flex-column으로 렌더).
+  // 💡 [롤플레이 B 전용 구역 — 2-27의 flex-column 방식에서 실제 마스터 확인된 "줄 단위 실측 배치"로
+  // 전환] 2-27 시점엔 마스터 템플릿(view01.css)이 .sentence-group(flex-column, 번역 통짜 배치)임을
+  // 확인해 그 방식을 따랐었으나, 이후 사용자 요청으로 "영어가 여러 줄로 꺾이면 한글은 그 줄 하단에
+  // 위치"하는 방식으로 마스터 템플릿(view01.js placeTranslations()) 자체가 변경됐고, 그 실제 코드를
+  // 받아 계산식·수치까지 확인해 캔버스에 그대로 반영했다(턴 높이는 동적 계산 없이 고정
+  // minHeight:60으로 JSX에서 직접 처리 — 아래 렌더 부분 참고).
+  const rolePlayScriptRefB = useRef(null);
+  const [roleplayBKorFragments, setRoleplayBKorFragments] = useState([]);
 
   // 💡 [강조 표현 색상 버튼] "텍스트 선택 → 색상 버튼 클릭"으로 <span class='emp col-N'>를 감싸기
   // 위해, 각 대사 textarea DOM 요소를 dialIdx(B형) / `${dialIdx}-${lineIdx}`(A형) 키로 보관한다.
@@ -623,9 +665,9 @@ export default function App() {
     });
   };
  
-  const showToast = (msg) => { 
-    setToastMsg(msg); 
-    setTimeout(() => setToastMsg(null), 3000); 
+  const showToast = (msg, duration = 3000) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), duration);
   };
  
   useEffect(() => {
@@ -801,7 +843,11 @@ export default function App() {
         parsedType = hasTableQuiz ? 'roleplay_a' : 'roleplay_c';
       }
       setContentType(parsedType);
- 
+      // 💡 컷 초과 경고(warnIfCutsExceedTemplate)가 뜨면, 바로 아래에서 무조건 부르는 "AI 분석
+      // 완료!" 토스트가 토스트 슬롯을 곧장 덮어써버려 경고가 순식간에 사라진다 — understand 분기
+      // 안에서 이 값을 true로 바꾸면 완료 토스트를 건너뛴다.
+      let skipCompletionToast = false;
+
       if (aiData.instruction || aiData.title || aiData.letter) {
          setGlobalData(prev => ({
              ...prev,
@@ -980,12 +1026,13 @@ export default function App() {
               processedViews.push({ uniqueId: `img_${Date.now()}_fallback`, src: base64Str, originalInfo: "전체 화면 (자동 할당)", bubbles: [{ inferredType: 'inline', extractedEng: [], xPercent: null, yPercent: null }] });
           }
           setCroppedViews(processedViews);
+          skipCompletionToast = warnIfCutsExceedTemplate(processedViews.length);
           setExtractedTips([]); // understand는 tips 개념이 없음
           setExtractedPagesC([]);
           setExtractedIntroColor('');
           setExtractedIntroAriaLabel('');
       }
-      showToast("✨ AI 분석 완료!");
+      if (!skipCompletionToast) showToast("✨ AI 분석 완료!");
     } catch (error) {
       console.error('AI 분석 실패:', error);
       // "Failed to fetch"는 서버 응답 에러가 아니라 브라우저가 프록시 서버(3001)에
@@ -1069,9 +1116,11 @@ export default function App() {
       const newScene = {
         type: "B",
         sceneId: nextIdx,
-        rolePlayImage: `RolePlay_img_${nextIdx}.png`,
+        // 💡 이미지 파일명은 수동 업로드 시점(buildSceneImageFileNames)에 채번한다 —
+        // 업로드 전까지는 빈칸으로 두어, 아직 이미지가 없는 상태를 그대로 드러낸다.
+        rolePlayImage: "",
         rolePlayImageSrc: "",
-        panelBtnImage: `RolePlay_img_mini_000${nextIdx + 1}.png`,
+        panelBtnImage: "",
         panelBtnLabel: `클릭 시 ${nextIdx + 1}번째 상황의 대화를 볼 수 있습니다.`,
         roleA: "A",
         roleB: "B",
@@ -1088,7 +1137,7 @@ export default function App() {
     if (contentType !== 'roleplay_b') return;
     setPageData(prev => {
       if ((prev || []).length <= 1) {
-        showToast("⚠️ 최소 1개의 씬은 남아있어야 합니다.");
+        showToast("⚠️ 최소 1개의 View는 남아있어야 합니다.");
         return prev;
       }
       const next = (prev || []).filter((_, sIdx) => sIdx !== idx);
@@ -1119,7 +1168,7 @@ export default function App() {
     if (contentType !== 'roleplay_c') return;
     setPageData(prev => {
       if ((prev || []).length <= 1) {
-        showToast("⚠️ 최소 1개의 페이지는 남아있어야 합니다.");
+        showToast("⚠️ 최소 1개의 View는 남아있어야 합니다.");
         return prev;
       }
       const next = (prev || []).filter((_, pIdx) => pIdx !== idx);
@@ -1359,9 +1408,40 @@ export default function App() {
     setCroppedViews(copyListItems);
   };
  
-  const deleteView = (indexToRemove) => setCroppedViews(prev => (prev || []).filter((_, idx) => idx !== indexToRemove));
-  const addView = () => setCroppedViews(prev => [...(prev || []), { uniqueId: `img_${Date.now()}`, src: uploadedImage || '', originalInfo: `추가된 컷 ${(prev || []).length + 1}`, bubbles: [{ inferredType: 'inline', extractedEng: [], xPercent: null, yPercent: null }] }]);
- 
+  // 💡 [정리] 예전 addView/deleteView는 1단계의 croppedViews를 조작하는 죽은 코드였다(버튼 연결
+  // 없음, 2-54 참고). "컷 추가"는 AI 인식률이 충분하면 별도 기능이 필요 없다고 판단해 만들지 않기로
+  // 확정했고(2-55), "컷 삭제"만 B/C형과 동일한 패턴(상단 탭 호버 ✕)으로 새로 구현한다 — pageData
+  // 자체를 다루는 함수로 새로 작성(예전 것과 달리 2단계 편집 상태에 실제로 반영됨).
+  const deleteCutUnderstand = (idx) => {
+    if (contentType !== 'understand') return;
+    setPageData(prev => {
+      if ((prev || []).length <= 1) {
+        showToast("⚠️ 최소 1개의 컷은 남아있어야 합니다.");
+        return prev;
+      }
+      const next = (prev || []).filter((_, i) => i !== idx);
+      setActiveViewIdx(current => Math.min(current, next.length - 1));
+      return next;
+    });
+  };
+
+  // 💡 [신규] Understand 전용 — AI가 인식한 컷 수가 마스터 템플릿의 고정 지원 개수
+  // (UNDERSTAND_MAX_CUTS)를 넘으면 미리 알려준다. 2-56에서 실제 view01/04.js를 확인한 결과,
+  // 컷이 템플릿 지원 범위를 넘어서면 "다음" 화살표가 존재하지 않는 view0X.html로 이동을
+  // 시도해 확실히 깨지는 것으로 확인됨(컷이 모자란 경우는 화살표가 숨겨져 대체로 안전) —
+  // "컷 추가" 기능은 만들지 않기로 확정했으므로(2-55), 이 불일치를 막을 방법이 없고 미리
+  // 알려주는 것만 가능하다.
+  // 반환값(true=경고를 띄웠음)으로, 호출부가 뒤이어 "AI 분석 완료!" 같은 일반 토스트를
+  // 곧바로 덮어씌우지 않도록 한다(토스트 슬롯이 하나뿐이라 그냥 순서대로 부르면 경고가
+  // 0.몇 초 만에 사라지고 일반 완료 메시지로 바뀌어버림).
+  const warnIfCutsExceedTemplate = (cutCount) => {
+    if (cutCount > UNDERSTAND_MAX_CUTS) {
+      showToast(`⚠️ AI가 인식한 컷은 ${cutCount}개인데, 마스터 템플릿은 컷 ${UNDERSTAND_MAX_CUTS}개까지만 지원합니다. ${UNDERSTAND_MAX_CUTS + 1}번째 컷부터는 실제 콘텐츠에서 화면이 깨질 수 있어요 — 지면을 다시 확인해 주세요.`, 8000);
+      return true;
+    }
+    return false;
+  };
+
   const startEditing = () => {
     if (!templates[contentType]) {
       showToast(`⚠️ [관리자 모드]에서 '${contentType.toUpperCase()}' 원본 템플릿 ZIP 파일을 먼저 등록해주세요!`);
@@ -1390,9 +1470,11 @@ export default function App() {
         ? extractedScenesB.map((scene, idx) => ({
             type: "B",
             sceneId: idx,
-            rolePlayImage: `RolePlay_img_${idx}.png`,
+            // 💡 이미지는 AI가 자동으로 채우지 않고 사용자가 직접 업로드하므로(2-19),
+            // 파일명도 업로드 시점(buildSceneImageFileNames)에 채번 — 그 전엔 빈칸.
+            rolePlayImage: "",
             rolePlayImageSrc: scene.src || "",
-            panelBtnImage: `RolePlay_img_mini_000${idx + 1}.png`,
+            panelBtnImage: "",
             panelBtnImageSrc: "",
             panelBtnLabel: `클릭 시 ${idx + 1}번째 상황의 대화를 볼 수 있습니다.`,
             roleA: "A",
@@ -1732,6 +1814,7 @@ export default function App() {
       if (!containerEl.isConnected) return;
       const s = scale || 1;
       const newFragments = [];
+      const newPad = {};
 
       containerEl.querySelectorAll('[data-turn-idx]').forEach((turnEl) => {
         const dialIdx = Number(turnEl.dataset.turnIdx);
@@ -1744,10 +1827,17 @@ export default function App() {
         const contentEl = turnEl.querySelector('.rp-turn-content');
         if (!contentEl) return;
         const contentRect = contentEl.getBoundingClientRect();
+        // 💡 [버그 수정] 한글은 position:absolute라 영어 텍스트 흐름의 실제 높이(engBottom)에
+        // 전혀 반영되지 않는다 — 영어가 짧고 한글이 길면 한글이 박스 밖으로 삐져나와 다음 턴과
+        // 겹친다(여러 턴이 겹치면 "영어가 전부 나열된 뒤 한글이 뭉쳐서 나온다"는 것처럼 보임).
+        // 턴별로 영어 줄의 실제 최하단(engBottom)과 한글 조각의 실제 최하단(korBottom)을 같이
+        // 재서, 한글이 더 아래까지 필요하면 그 차이를 컨테이너 paddingBottom으로 확보한다.
+        let engBottom = 0;
+        let korBottom = 0;
 
         turnEl.querySelectorAll('.rp-line-eng').forEach((lineEl, lineIdx) => {
           const line = lines[lineIdx];
-          if (!line || !line.kor) return;
+          if (!line) return;
           // 💡 getBoundingClientRect()는 문장이 2줄로 꺾일 때 두 줄을 하나로 뭉뚱그린 박스를 줘서
           // 위치가 어긋난다. getClientRects()로 실제 줄마다 박스를 따로 받아, zipper처럼 한글도
           // 그만큼 나눠서 각 줄 바로 아래에 배치한다.
@@ -1756,8 +1846,16 @@ export default function App() {
           const rawRects = lineEl.getClientRects();
           if (!rawRects || rawRects.length === 0) return;
           const rects = mergeRectsByVisualLine(rawRects);
+          rects.forEach(r => {
+            const bottom = (r.top + r.height - contentRect.top) / s;
+            if (bottom > engBottom) engBottom = bottom;
+          });
+          if (!line.kor) return;
 
-          // 💡 마스터(view01.js placeMultiLineTranslation)와 동일한 수치로 맞춤:
+          // 💡 마스터(view01.js placeMultiLineTranslation)와 동일한 원리: 줄(rect)마다 그 줄 폭에
+          // 맞춰 한글을 실측해서 나눠 넣는다. 문장이 2줄로 꺾여도 한글 번역 전체가 1번째 줄 폭 안에
+          // 들어가면 자연히 1번째 줄 하단에 한 번에 배치되고(2번째 줄에는 남는 게 없어 아무것도 안
+          // 들어감), 한글이 더 길어서 1번째 줄에 다 못 들어가면 나머지가 2번째 줄 하단으로 넘어간다.
           // left는 +3px 보정(TRANSLATION_LEFT_NUDGE), top은 JS의 +18px과 .translation span의
           // CSS margin-top:10px(절대배치 요소라도 margin-top만큼 더 밀림)을 합친 +28px, 각 줄의
           // 사용 가능 너비는 컨테이너 남은 폭이 아니라 그 줄(rect) 자체의 렌더링 폭을 기준으로 한다.
@@ -1778,11 +1876,17 @@ export default function App() {
             }
             const top = (rect.top - contentRect.top) / s + 28;
             newFragments.push({ key: `${dialIdx}-${lineIdx}-${i}`, turnIdx: dialIdx, left, top, text, maxWidth: availWidth });
+            const fragHeight = measureTextBlockHeight(text, availWidth, 'NanumGothicBold, sans-serif', 15, 1.8, 'keep-all');
+            const fragBottom = top + fragHeight;
+            if (fragBottom > korBottom) korBottom = fragBottom;
           }
         });
+
+        newPad[dialIdx] = Math.max(0, korBottom - engBottom);
       });
 
       setRoleplayKorFragments(newFragments);
+      setRoleplayTurnExtraPad(newPad);
     };
 
     measure();
@@ -1805,6 +1909,7 @@ export default function App() {
       if (!containerEl.isConnected) return;
       const s = scale || 1;
       const newFragments = [];
+      const newPad = {};
 
       containerEl.querySelectorAll('[data-turn-idx]').forEach((turnEl) => {
         const dialIdx = Number(turnEl.dataset.turnIdx);
@@ -1817,16 +1922,28 @@ export default function App() {
         const contentEl = turnEl.querySelector('.rp-turn-content');
         if (!contentEl) return;
         const contentRect = contentEl.getBoundingClientRect();
+        // 💡 [버그 수정] A형과 동일한 원인 — 한글이 position:absolute라 영어 텍스트 실제 높이에
+        // 반영되지 않아, 영어가 짧고 한글이 길면 다음 턴과 겹친다. 턴별 영어/한글 최하단을 같이
+        // 재서 필요한 만큼 paddingBottom을 확보한다.
+        let engBottom = 0;
+        let korBottom = 0;
 
         turnEl.querySelectorAll('.rp-line-eng').forEach((lineEl, lineIdx) => {
           const line = lines[lineIdx];
-          if (!line || !line.kor) return;
+          if (!line) return;
           // 💡 [버그 수정] 강조색(emp span)이 걸린 줄은 getClientRects()가 같은 줄을 여러 조각으로
           // 쪼개서 돌려주므로, mergeRectsByVisualLine()으로 실제 시각적 줄 단위로 합친 뒤 사용한다.
           const rawRects = lineEl.getClientRects();
           if (!rawRects || rawRects.length === 0) return;
           const rects = mergeRectsByVisualLine(rawRects);
+          rects.forEach(r => {
+            const bottom = (r.top + r.height - contentRect.top) / s;
+            if (bottom > engBottom) engBottom = bottom;
+          });
+          if (!line.kor) return;
 
+          // 💡 [A형과 동일] 줄(rect)마다 그 줄 폭에 맞춰 한글을 실측해서 나눠 넣는다 — 한글 전체가
+          // 1번째 줄 폭 안에 들어가면 1번째 줄 하단에 한 번에 배치된다.
           let remainder = line.kor;
           for (let i = 0; i < rects.length && remainder; i++) {
             const rect = rects[i];
@@ -1844,11 +1961,101 @@ export default function App() {
             }
             const top = (rect.top - contentRect.top) / s + 28;
             newFragments.push({ key: `${dialIdx}-${lineIdx}-${i}`, turnIdx: dialIdx, left, top, text, maxWidth: availWidth });
+            const fragHeight = measureTextBlockHeight(text, availWidth, 'NanumGothicBold, sans-serif', 15, 1.8, 'keep-all');
+            const fragBottom = top + fragHeight;
+            if (fragBottom > korBottom) korBottom = fragBottom;
+          }
+        });
+
+        newPad[dialIdx] = Math.max(0, korBottom - engBottom);
+      });
+
+      setRoleplayCKorFragments(newFragments);
+      setRoleplayCTurnExtraPad(newPad);
+    };
+
+    measure();
+    if (document.fonts && document.fonts.status !== 'loaded') {
+      document.fonts.ready.then(() => requestAnimationFrame(measure));
+    }
+  }, [activeData, scale, contentType]);
+
+  // 💡 [롤플레이 B형 — 실제 마스터 템플릿(view01.js placeTranslations()) 코드로 재검증 완료]
+  // 이관 문서(docs/roleplay_b_kor_line_placement_master_template_prompt.md) 반영 결과를 실제
+  // view01.js/css로 받아 확인한 결과, 핵심 알고리즘(줄 단위 실측 분리·배치)은 요청대로 정확히
+  // 반영되어 있었지만 세부 수치는 저희가 A/C값을 임시로 차용했던 것과 달랐다 — 다음 실제 값으로
+  // 정정: (2) 한글은 15px/1.8이 아니라 B 원래 값 16px/line-height 1.0 그대로 유지, (3) 한글 top은
+  // "줄 위(rowTop)+28"이 아니라 "줄 아래(rowBottom)+1px(KOR_GAP)", (4) left 보정(+3px)도 실제
+  // 코드엔 없어 제거, (5) 턴 높이 확보는 engBottom/korBottom 동적 계산 없이 `.talk{min-height:60px}`
+  // 고정값 하나로 처리(아래 JSX에서 턴 행 자체에 minHeight:60을 줌).
+  // 💡 [재검증 — docs/roleplay_b_kor_multiline_overlap_master_template_prompt.md 반영 확인] (1) 위에서
+  // "B 원래 값 1.2 유지"로 정정했던 영어 line-height가, 문장이 2줄 이상 꺾일 때 한글이 다음 줄과
+  // 겹치는 문제(이번에 별도로 이관한 건)의 수정으로 실제 1.2 → 2.4로 다시 바뀌었다(view01.css
+  // .text-eng). 그리고 그 line-height 확대만으로 커버 안 되는 예외 상황에 대비한 clamp(한글 top이
+  // 다음 줄의 top을 넘지 않도록 제한)도 placeTranslations()에 추가로 반영되어 있어, 같은 로직을
+  // 아래 measure()에도 반영한다.
+  useLayoutEffect(() => {
+    if (contentType !== 'roleplay_b' || !activeData) {
+      setRoleplayBKorFragments(prev => (prev.length > 0 ? [] : prev));
+      return;
+    }
+    const containerEl = rolePlayScriptRefB.current;
+    if (!containerEl) return;
+
+    const measure = () => {
+      if (!containerEl.isConnected) return;
+      const s = scale || 1;
+      const newFragments = [];
+
+      containerEl.querySelectorAll('[data-turn-idx]').forEach((turnEl) => {
+        const dialIdx = Number(turnEl.dataset.turnIdx);
+        const turn = activeData.dialogues?.[dialIdx];
+        if (!turn) return;
+        const lines = [{ sentence: turn.sentence || '', kor: turn.kor || '' }];
+
+        const contentEl = turnEl.querySelector('.rp-turn-content');
+        if (!contentEl) return;
+        const contentRect = contentEl.getBoundingClientRect();
+
+        turnEl.querySelectorAll('.rp-line-eng').forEach((lineEl, lineIdx) => {
+          const line = lines[lineIdx];
+          if (!line || !line.kor) return;
+          const rawRects = lineEl.getClientRects();
+          if (!rawRects || rawRects.length === 0) return;
+          const rects = mergeRectsByVisualLine(rawRects);
+
+          // 💡 마스터 placeTranslations()와 동일: KOR_GAP=1, left 보정 없음, top은 줄의 top이 아니라
+          // bottom(rect.top+rect.height) 기준.
+          let remainder = line.kor;
+          for (let i = 0; i < rects.length && remainder; i++) {
+            const rect = rects[i];
+            const left = (rect.left - contentRect.left) / s;
+            const availWidth = Math.max(60, rect.width / s);
+            const isLastRow = (i === rects.length - 1);
+            let text;
+            if (isLastRow) {
+              text = remainder;
+              remainder = '';
+            } else {
+              const { firstLine, rest } = splitTextForRowWidth(remainder, availWidth, 'NanumGothicBold', 16, 1.0, 'keep-all');
+              text = firstLine;
+              remainder = rest;
+            }
+            let top = (rect.top - contentRect.top) / s + rect.height / s + 1;
+            // 💡 [줄 겹침 방지 clamp — placeTranslations() 재검증분] line-height 확대(2.4)만으로
+            // 커버되지 않는 예외 상황을 대비해, 한글이 다음 영어 줄의 시작 지점을 넘어서지 않도록
+            // 한 번 더 제한한다.
+            const nextRect = rects[i + 1];
+            if (nextRect) {
+              const nextTop = (nextRect.top - contentRect.top) / s;
+              if (top > nextTop - 1) top = nextTop - 1;
+            }
+            newFragments.push({ key: `${dialIdx}-${lineIdx}-${i}`, turnIdx: dialIdx, left, top, text, maxWidth: availWidth });
           }
         });
       });
 
-      setRoleplayCKorFragments(newFragments);
+      setRoleplayBKorFragments(newFragments);
     };
 
     measure();
@@ -2114,23 +2321,49 @@ export default function App() {
     }
   };
 
-  // 💡 [롤플레이 B 전용] 씬 상황극 이미지 업로드. handleBgSwap과 동일한 FileReader 패턴을 쓰되,
+  // 💡 [롤플레이 B 전용] 실제 업로드 파일명과 무관하게, 뷰(View) 번호만 반영해 파일명을 고정
+  // 채번한다 — 메인: RolePlay_img_{N}.png, 미니 썸네일: RolePlay_img_mini_{0000}.png (N은 1부터).
+  // addSceneB/startEditing/export 폴백에 흩어져 있는 동일 규칙과 반드시 맞춰야 한다.
+  const buildSceneImageFileNames = (viewIdx) => {
+    const n = viewIdx + 1;
+    return {
+      rolePlayImage: `RolePlay_img_${n}.png`,
+      panelBtnImage: `RolePlay_img_mini_${String(n).padStart(4, '0')}.png`
+    };
+  };
+
+  // 💡 [롤플레이 B 전용] 씬 상황극 메인 이미지 업로드. handleBgSwap과 동일한 FileReader 패턴을 쓰되,
   // 실제 이미지 데이터(rolePlayImageSrc)와 파일명(rolePlayImage, ZIP export 경로용)을 분리해서 저장한다.
-  // 하단 썸네일(panelBtnImageSrc)은 별도 업로드를 요구하지 않고 resizeImageForUpload로 축소 생성한다.
+  // 파일명은 실제 업로드 파일명과 무관하게 뷰 번호 기준으로 고정 채번한다(buildSceneImageFileNames).
+  // 메인과 썸네일은 완전히 독립적으로 관리한다 — 메인을 올려도 썸네일을 자동으로 채우지 않고,
+  // 사용자가 각각 직접 업로드하기 전까지는 빈칸 그대로 둔다(사용자 확정 결정).
   const handleSceneImageUpload = (e) => {
     if (contentType !== 'roleplay_b') return;
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = async (event) => {
-      const fullSrc = event.target.result;
-      let thumbSrc = fullSrc;
-      try {
-        thumbSrc = await resizeImageForUpload(fullSrc, 200, 0.85);
-      } catch (err) {
-        console.warn('썸네일 생성 실패, 원본 이미지를 그대로 사용합니다:', err);
-      }
-      setPageData(prev => (prev || []).map((scene, idx) => idx === activeViewIdx ? { ...scene, rolePlayImageSrc: fullSrc, panelBtnImageSrc: thumbSrc } : scene));
+    reader.onload = (event) => {
+      const { rolePlayImage } = buildSceneImageFileNames(activeViewIdx);
+      setPageData(prev => (prev || []).map((scene, idx) => idx === activeViewIdx
+        ? { ...scene, rolePlayImage, rolePlayImageSrc: event.target.result }
+        : scene));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // 💡 [롤플레이 B 전용] 하단 썸네일(미니) 이미지 업로드 — 메인 이미지와 완전히 독립적으로,
+  // 이것도 사용자가 직접 업로드해야만 채워진다(자동 축소 생성 없음). 파일명은 메인과 동일하게
+  // 뷰 번호 기준으로 고정 채번한다.
+  const handleSceneThumbnailUpload = (e) => {
+    if (contentType !== 'roleplay_b') return;
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const { panelBtnImage } = buildSceneImageFileNames(activeViewIdx);
+      setPageData(prev => (prev || []).map((scene, idx) => idx === activeViewIdx
+        ? { ...scene, panelBtnImage, panelBtnImageSrc: event.target.result }
+        : scene));
     };
     reader.readAsDataURL(file);
   };
@@ -2397,8 +2630,8 @@ export default function App() {
             const formattedBData = pageData.map((scene, sIdx) => ({
                 type: "B",
                 sceneId: sIdx,
-                rolePlayImage: String(scene.rolePlayImage || `RolePlay_img_${sIdx}.png`),
-                panelBtnImage: String(scene.panelBtnImage || `RolePlay_img_mini_000${sIdx + 1}.png`),
+                rolePlayImage: String(scene.rolePlayImage || `RolePlay_img_${sIdx + 1}.png`),
+                panelBtnImage: String(scene.panelBtnImage || `RolePlay_img_mini_${String(sIdx + 1).padStart(4, '0')}.png`),
                 panelBtnLabel: String(scene.panelBtnLabel || "클릭 시 대화를 볼 수 있습니다."),
                 roleA: String(scene.roleA || "A"),
                 roleB: String(scene.roleB || "B"),
@@ -2629,8 +2862,8 @@ export default function App() {
                 const meta = {
                   understand: { badge: 'U', badgeClass: 'bg-blue-100 text-blue-600', title: 'Understand 유형', desc: '말풍선 이해도 향상 코믹 콘텐츠용 마스터 소스', btnClass: 'bg-blue-600 hover:bg-blue-700' },
                   roleplay_a: { badge: 'RA', badgeClass: 'bg-purple-100 text-purple-600', title: 'Roleplay(A) 유형', desc: '역할극 대화형 콘텐츠(예: talk and complete)의 마스터 소스', btnClass: 'bg-purple-600 hover:bg-purple-700' },
-                  roleplay_b: { badge: 'RB', badgeClass: 'bg-teal-100 text-teal-600', title: 'Roleplay(B) 유형', desc: '표 퀴즈를 전면 비활성화한 씬 기반 다중 장면극 마스터 소스', btnClass: 'bg-teal-600 hover:bg-teal-700' },
-                  roleplay_c: { badge: 'RC', badgeClass: 'bg-fuchsia-100 text-fuchsia-600', title: 'Roleplay(C) 유형', desc: '표 퀴즈 대신 여러 대화 갈래(페이지)를 넘겨보는 분기형 대화 마스터 소스', btnClass: 'bg-fuchsia-600 hover:bg-fuchsia-700' },
+                  roleplay_b: { badge: 'RB', badgeClass: 'bg-teal-100 text-teal-600', title: 'Roleplay(B) 유형', desc: '표 퀴즈를 전면 비활성화한 View 기반 다중 장면극 마스터 소스', btnClass: 'bg-teal-600 hover:bg-teal-700' },
+                  roleplay_c: { badge: 'RC', badgeClass: 'bg-fuchsia-100 text-fuchsia-600', title: 'Roleplay(C) 유형', desc: '표 퀴즈 대신 여러 대화 갈래(View)를 넘겨보는 분기형 대화 마스터 소스', btnClass: 'bg-fuchsia-600 hover:bg-fuchsia-700' },
                   intro: { badge: 'IN', badgeClass: 'bg-pink-100 text-pink-600', title: 'Intro 유형', desc: '레슨 시작 표지(배경+타이틀 이미지, 학습목표) 단일 화면 마스터 소스', btnClass: 'bg-pink-600 hover:bg-pink-700' },
                 }[type];
                 return (
@@ -2756,7 +2989,7 @@ export default function App() {
                         </div>
                         <div className="flex justify-between text-base border-b border-gray-200 pb-3"><span className="text-gray-500">헤더 발문 자산</span><span className="font-bold text-gray-800">{globalData.header.letter} - {globalData.header.text}</span></div>
                         <div className="flex justify-between text-base border-b border-gray-200 pb-3"><span className="text-gray-500">지시문 내용</span><span className="font-bold text-gray-800 max-w-[360px] truncate">{globalData.header.instruction}</span></div>
-                        <div className="flex justify-between text-base"><span className="text-gray-500">정렬 뷰 개수</span><span className="font-bold text-indigo-600">{contentType === 'understand' ? croppedViews.length : '1 Scene (동적 멀티전환)'}</span></div>
+                        <div className="flex justify-between text-base"><span className="text-gray-500">정렬 뷰 개수</span><span className="font-bold text-indigo-600">{contentType === 'understand' ? croppedViews.length : '1 View (동적 멀티전환)'}</span></div>
                       </div>
                     </div>
 
@@ -2867,29 +3100,69 @@ export default function App() {
       {!isAdminMode && currentPage === 2 && activeData && (
         <div className="flex-1 flex overflow-hidden bg-gray-300 animate-none" onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
           <div className="flex-1 flex flex-col relative min-w-0 bg-gray-300">
-            <div className="p-2 bg-white border-b flex justify-between items-center z-20 shrink-0 shadow-sm">
+            {/* 💡 [수정] 상단 View 탭에 마우스오버 삭제(✕) 배지가 탭 위로 살짝 튀어나오는데(-top-1.5),
+                이 바가 최상단 헤더(p-3)보다 좁은 p-2라 배지가 헤더와 겹쳐 보였다. 헤더와 같은 p-3로
+                맞추고, 가로 스크롤 행에도 세로 여유(py-2)를 줘서 overflow-x-auto가 세로축도 함께
+                클리핑(auto로 강제 상속되는 CSS 스펙 동작)하면서 배지 윗부분이 잘리는 문제를 막는다. */}
+            <div className="p-3 bg-white border-b flex justify-between items-center z-20 shrink-0 shadow-sm">
                <div className="flex items-center gap-2"><button onClick={() => setCurrentPage(1)} className="px-4 py-1.5 text-sm font-bold rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200 border transition">← 뒤로가기</button></div>
-               <div className="flex gap-2 overflow-x-auto px-2">
+               <div className="flex gap-2 overflow-x-auto px-2 py-2">
+                 {/* 💡 [수정] B/C형과 동일한 상단 탭 호버 ✕ 삭제 패턴 반영(2-55). "View"였던 표기도
+                     "컷"으로 되돌렸다 — 컷은 Understand 전용 용어로 확정(B/C의 View와는 구조가
+                     달라 일부러 다른 말을 쓰기로 함, 2-54/2-55 참고). "컷 추가"는 AI 인식률이
+                     충분하면 별도 기능이 필요 없다고 판단해 만들지 않는다. */}
                  {contentType === 'understand' && (pageData || []).map((data, idx) => (
-                    <button key={data.id} onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>View {String(data.view || '')}</button>
+                    <div key={data.id} className="relative group shrink-0">
+                      <button onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-emerald-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>컷 {String(data.view || '')}</button>
+                      {(pageData || []).length > 1 && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); deleteCutUnderstand(idx); }}
+                          className="absolute -right-1.5 -top-1.5 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white shadow"
+                          title="이 컷 삭제"
+                        >✕</button>
+                      )}
+                    </div>
                   ))}
                   {contentType === 'roleplay_a' && (
                     <button className="px-5 py-1.5 text-sm font-bold rounded-full bg-purple-600 text-white shadow-md whitespace-nowrap">{resolveTypeDisplayName()}</button>
                   )}
                   {contentType === 'roleplay_c' && (
                     <>
+                      {/* 💡 [수정] B형(2-49)과 동일하게, 페이지 삭제를 속성 패널의 별도 텍스트 버튼에서
+                          이 상단 탭 호버 ✕로 일원화했다 — 삭제 경로가 유형마다 다르면 헷갈리므로,
+                          "삭제는 항상 상단 탭에서"로 두 유형을 통일한다(속성 패널 쪽 버튼은 제거). */}
                       {(pageData || []).map((page, idx) => (
-                        <button key={page.id} onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-fuchsia-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>Page {idx + 1}</button>
+                        <div key={page.id} className="relative group shrink-0">
+                          <button onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-fuchsia-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>View {idx + 1}</button>
+                          {(pageData || []).length > 1 && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deletePageC(idx); }}
+                              className="absolute -right-1.5 -top-1.5 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white shadow"
+                              title="이 뷰 삭제"
+                            >✕</button>
+                          )}
+                        </div>
                       ))}
-                      <button onClick={addPageC} className="px-4 py-1.5 text-sm font-bold rounded-full whitespace-nowrap border-2 border-dashed border-fuchsia-400 text-fuchsia-600 hover:bg-fuchsia-50 transition">+ 페이지 추가</button>
+                      <button onClick={addPageC} className="px-4 py-1.5 text-sm font-bold rounded-full whitespace-nowrap border-2 border-dashed border-fuchsia-400 text-fuchsia-600 hover:bg-fuchsia-50 transition">+ View 추가</button>
                     </>
                   )}
                   {contentType === 'roleplay_b' && (
                     <>
+                      {/* 💡 [수정] 씬 삭제 기능을 캔버스 미리보기 패널에서 이 상단 탭으로 이동 —
+                          각 탭에 마우스를 올리면 우측 상단에 ✕ 버튼이 나타나 그 자리에서 바로 삭제할 수 있다. */}
                       {(pageData || []).map((scene, idx) => (
-                        <button key={scene.id} onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-teal-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>Scene 0{idx + 1}</button>
+                        <div key={scene.id} className="relative group shrink-0">
+                          <button onClick={() => setActiveViewIdx(idx)} className={`px-5 py-1.5 text-sm font-bold rounded-full transition whitespace-nowrap ${activeViewIdx === idx ? 'bg-teal-600 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-300'}`}>View 0{idx + 1}</button>
+                          {(pageData || []).length > 1 && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deleteSceneB(idx); }}
+                              className="absolute -right-1.5 -top-1.5 w-5 h-5 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white shadow"
+                              title="이 뷰 삭제"
+                            >✕</button>
+                          )}
+                        </div>
                       ))}
-                      <button onClick={addSceneB} className="px-4 py-1.5 text-sm font-bold rounded-full whitespace-nowrap border-2 border-dashed border-teal-400 text-teal-600 hover:bg-teal-50 transition">+ 씬 추가</button>
+                      <button onClick={addSceneB} className="px-4 py-1.5 text-sm font-bold rounded-full whitespace-nowrap border-2 border-dashed border-teal-400 text-teal-600 hover:bg-teal-50 transition">+ View 추가</button>
                     </>
                   )}
                </div>
@@ -3119,83 +3392,108 @@ export default function App() {
                                 )}
                              </div>
 
-                             {/* B형 전용 740px 대형 대본 영역 — 마스터 템플릿(view01.css) 확인 결과, 실측 절대배치가
-                                 아니라 .sentence-group(flex-column) 구조로 영어 문장 바로 아래에 한글이 자연스럽게
-                                 흐른다. emp 강조색은 view01.css 정의값(col-0=#b42c13, col-1=#018f9e, col-2=#e0629d)과
+                             {/* B형 전용 740px 대형 대본 영역 — A/C형과 동일하게 getClientRects() 실측 기반으로
+                                 한글을 줄 단위로 배치한다(2-27의 flex-column 방식에서 전환, 위 state 선언부 주석
+                                 참고). emp 강조색은 view01.css 정의값(col-0=#b42c13, col-1=#018f9e, col-2=#e0629d)과
                                  동일하게 맞춘다. */}
                              <style>{`.rpb-script .emp.col-0{color:#b42c13}.rpb-script .emp.col-1{color:#018f9e}.rpb-script .emp.col-2{color:#e0629d}`}</style>
-                             <div className="rpb-script" style={{ position: 'absolute', left: 485, top: 251, width: 740, height: 360, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0', padding: '32px 30px', overflowY: 'auto' }}>
+                             <div ref={rolePlayScriptRefB} className="rpb-script" style={{ position: 'absolute', left: 485, top: 251, width: 740, height: 360, backgroundColor: '#f4f4f4', borderRadius: '20px 20px 0 0', padding: '32px 30px', overflowY: 'auto' }}>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                                   {/* 💡 [실제 마스터 값] .talk{min-height:60px} 그대로 — 한글은 실제 필요한 높이를
+                                       동적으로 계산해 확보하지 않고 이 고정값 하나로만 처리한다(마스터 코드 확인 완료). */}
                                    {(activeData.dialogues || []).map((item, dialIdx) => (
-                                      <div key={dialIdx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-                                         <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.2' }}>{String(item.speaker || '')}:</div>
-                                         <div style={{ flex: 1 }}>
-                                            <span className="sentence-group" style={{ display: 'inline-flex', flexDirection: 'column', verticalAlign: 'top' }}>
-                                               <span
-                                                  className="text-eng"
-                                                  style={{ display: 'inline-block', width: 'fit-content', fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.2', wordBreak: 'keep-all' }}
-                                                  dangerouslySetInnerHTML={{ __html: String(item.sentence || "영어 대사") }}
-                                               />
-                                               <div className="text-kor" style={{ display: 'block', fontSize: '16px', color: '#06c', fontWeight: 'bold', marginTop: 1, lineHeight: '1.0', wordBreak: 'keep-all' }}>{item.kor}</div>
-                                            </span>
+                                      <div key={dialIdx} data-turn-idx={dialIdx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', minHeight: 60 }}>
+                                         {/* 💡 [최종 확정 — docs/roleplay_b_overflow_wrap_and_line_placement_retry_master_template_prompt.md
+                                             반영 확인] 화자 표기(.name)와 대사(.text-eng)의 line-height는 항상 같은 값으로 동기화되어야
+                                             한다(다르면 화자 표기가 대사보다 위쪽에 떠 보이는 정렬 어긋남 발생) — 최종 확정값 2.4로 통일. */}
+                                         <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '2.4' }}>{String(item.speaker || '')}:</div>
+                                         <div className="rp-turn-content" style={{ flex: 1, position: 'relative', minHeight: 30 }}>
+                                            {/* 💡 [최종 확정] 문장이 2줄 이상 꺾일 때 한글이 다음 줄과 겹치는 문제 수정으로 영어
+                                                line-height가 원래 값 1.2에서 2.4로 확대되었다(view01.css .text-eng 실제 확인).
+                                                overflow-wrap: normal도 단어 중간 줄바꿈 버그 수정분(retry 문서) 반영 완료 상태. */}
+                                            <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '2.4', whiteSpace: 'normal', wordBreak: 'keep-all', overflowWrap: 'normal' }}>
+                                               <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: String(item.sentence || "영어 대사") }} />
+                                            </div>
+                                            {roleplayBKorFragments.filter(f => f.turnIdx === dialIdx).map(f => (
+                                               <div key={f.key} style={{ position: 'absolute', left: f.left, top: f.top, maxWidth: f.maxWidth, fontFamily: 'NanumGothicBold, sans-serif', fontSize: '16px', color: '#06c', lineHeight: '1.0', wordBreak: 'keep-all' }}>{f.text}</div>
+                                            ))}
                                          </div>
                                       </div>
                                    ))}
                                 </div>
                              </div>
 
-                             {/* B형 Scene 전환 패널 버튼 세트 시각화 + 씬 추가/삭제 — 마스터 템플릿
-                                 (view01.js renderRolePlay)이 반영한 폭 초과 수정과 동일한 계산식을 그대로
-                                 포팅한다: 버튼 행 전체 폭은 항상 메인 이미지 폭(420px)에 맞추고, 씬 개수(N)가
-                                 늘어나면 버튼 1개당 폭과 내부 썸네일 크기가 비례해서 줄어든다(2-30 참고). */}
+                             {/* B형 Scene 전환 패널 버튼 세트 시각화 — 2-53: 마스터 템플릿(view01.js
+                                 renderRolePlay) 실제 반영 코드를 받아 그 계산식을 한 글자도 다르지 않게
+                                 그대로 포팅했다(2-52의 역산 추정치를 실제 코드로 확정). 한 줄 최대 6개
+                                 (rows = ceil(N/6)), 열 수는 줄 수에 맞춰 균등 분배(columns = ceil(N/rows)),
+                                 버튼 높이는 줄 수만큼 나눠 총 높이(75px = [해석] 버튼 라인)를 넘지 않게
+                                 축소. 여기에 마스터 코드로 처음 확인된 것 2가지를 추가 반영: (1) 마지막
+                                 줄의 개수가 모자라도 그 줄만 폭 중앙 정렬(rowLeftOffset)되어 좌측으로
+                                 쏠리지 않는다 — flexWrap 기반이던 이전 구현은 이걸 못 하므로 버튼마다
+                                 left/top을 직접 계산하는 절대좌표 방식으로 교체. (2) 선택 여부와 무관하게
+                                 버튼마다 PANEL_BG_COLORS(6색 파스텔, index%6)로 배경색이 미리 지정되고,
+                                 선택 표시는 배경색이 아니라 노란 테두리 오버레이(.on:after)로 별도 처리
+                                 — 이전엔 선택 시 배경색 자체를 바꿔서 마스터와 달랐던 부분.
+                                 이 위젯은 순수 미리보기 전용이라 추가/삭제 버튼은 두지 않는다 — 추가는
+                                 상단 View 탭의 "+ View 추가", 삭제는 상단 탭 호버 ✕로만 가능하다. */}
                              {(() => {
+                               const PANEL_ROW_LEFT = 54.5;
+                               const PANEL_ROW_TOP = 549;
                                const PANEL_ROW_WIDTH = 420;
-                               const PANEL_ROW_GAP = 6;
+                               const PANEL_TOTAL_HEIGHT = 75; // 줄 수와 무관하게 이 총 높이(=[해석] 버튼 라인)를 넘지 않게 나눠 가진다
+                               const PANEL_GAP = 6;
+                               const PANEL_MAX_PER_ROW = 6;
                                const THUMB_NATIVE_W = 84;
                                const THUMB_NATIVE_H = 57;
+                               const PANEL_BG_COLORS = ['#e5f2ff', '#e4f4de', '#f8ebf1', '#fff1db', '#f0e9ff', '#e0f7f4'];
                                const sceneCount = pageData.length;
-                               const btnWidth = sceneCount > 0 ? (PANEL_ROW_WIDTH - (sceneCount - 1) * PANEL_ROW_GAP) / sceneCount : PANEL_ROW_WIDTH;
-                               const thumbScale = Math.min(1, btnWidth / THUMB_NATIVE_W);
+                               const rows = sceneCount > 0 ? Math.ceil(sceneCount / PANEL_MAX_PER_ROW) : 1;
+                               const columns = sceneCount > 0 ? Math.ceil(sceneCount / rows) : 1;
+                               const btnWidth = (PANEL_ROW_WIDTH - (columns - 1) * PANEL_GAP) / columns;
+                               const btnHeight = (PANEL_TOTAL_HEIGHT - (rows - 1) * PANEL_GAP) / rows;
+                               const thumbScale = Math.min(1, btnWidth / THUMB_NATIVE_W, btnHeight / THUMB_NATIVE_H);
                                return (
-                                 <div className="rpb-panel-btns" style={{ position: 'absolute', top: 549, left: 54.5, display: 'flex', gap: `${PANEL_ROW_GAP}px`, alignItems: 'center', pointerEvents: 'auto' }}>
-                                   {pageData.map((scene, idx) => (
-                                     <button
-                                       key={scene.id || idx}
-                                       onClick={() => setActiveViewIdx(idx)}
-                                       className="group"
-                                       style={{
-                                         width: `${btnWidth}px`,
-                                         flexShrink: 0,
-                                         height: '75px',
-                                         borderRadius: '10px',
-                                         backgroundColor: idx === activeViewIdx ? '#e5f2ff' : '#fafafa',
-                                         border: idx === activeViewIdx ? '4px solid #ffcc00' : '1px solid #ddd',
-                                         display: 'flex',
-                                         alignItems: 'center',
-                                         justifyContent: 'center',
-                                         position: 'relative',
-                                         cursor: 'pointer'
-                                       }}
-                                     >
-                                        <span style={{ position: 'absolute', top: 2, left: 4, fontSize: '9px', fontWeight: 'bold', color: '#444' }}>Scene {idx+1}</span>
-                                        {pageData.length > 1 && (
-                                          <span
-                                            onClick={(e) => { e.stopPropagation(); deleteSceneB(idx); }}
-                                            className="opacity-0 group-hover:opacity-100 transition-opacity"
-                                            style={{ position: 'absolute', top: 2, right: 2, width: 16, height: 16, borderRadius: '50%', backgroundColor: '#fee2e2', color: '#ef4444', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                                          >✕</span>
-                                        )}
-                                        <div style={{ width: `${THUMB_NATIVE_W * thumbScale}px`, height: `${THUMB_NATIVE_H * thumbScale}px`, border: '1px dashed #ccc', borderRadius: '4px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', fontSize: '9px', color: '#999' }}>
-                                           {scene.panelBtnImageSrc ? (
-                                             <img src={scene.panelBtnImageSrc} alt={scene.panelBtnImage || '썸네일'} className="w-full h-full object-cover" />
-                                           ) : (scene.panelBtnImage || "mini.png")}
-                                        </div>
-                                     </button>
-                                   ))}
-                                   <button
-                                     onClick={addSceneB}
-                                     style={{ width: '60px', flexShrink: 0, height: '75px', borderRadius: '10px', border: '2px dashed #14b8a6', backgroundColor: '#f0fdfa', color: '#0d9488', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer' }}
-                                   >+ 씬</button>
+                                 <div className="rpb-panel-btns" style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'auto' }}>
+                                   {pageData.map((scene, idx) => {
+                                     const row = Math.floor(idx / columns);
+                                     const col = idx % columns;
+                                     const itemsInThisRow = Math.min(columns, sceneCount - row * columns);
+                                     const rowWidth = itemsInThisRow * btnWidth + (itemsInThisRow - 1) * PANEL_GAP;
+                                     const rowLeftOffset = (PANEL_ROW_WIDTH - rowWidth) / 2;
+                                     const btnLeft = PANEL_ROW_LEFT + rowLeftOffset + col * (btnWidth + PANEL_GAP);
+                                     const btnTop = PANEL_ROW_TOP + row * (btnHeight + PANEL_GAP);
+                                     return (
+                                       <button
+                                         key={scene.id || idx}
+                                         onClick={() => setActiveViewIdx(idx)}
+                                         className="group"
+                                         style={{
+                                           position: 'absolute',
+                                           left: `${btnLeft}px`,
+                                           top: `${btnTop}px`,
+                                           width: `${btnWidth}px`,
+                                           height: `${btnHeight}px`,
+                                           borderRadius: '10px',
+                                           backgroundColor: PANEL_BG_COLORS[idx % PANEL_BG_COLORS.length],
+                                           boxShadow: idx === activeViewIdx ? 'inset 0 0 0 4px #ffcc00' : 'inset 0 0 0 1px #ddd',
+                                           display: 'flex',
+                                           alignItems: 'center',
+                                           justifyContent: 'center',
+                                           cursor: 'pointer'
+                                         }}
+                                       >
+                                          {/* 💡 [수정] 이 미리보기 위젯은 실제 마스터 템플릿 화면을 그대로 흉내낸
+                                              것이라, 편집 전용 기능(추가/삭제)은 여기서 빼고 상단 탭으로 옮겼다. */}
+                                          <span style={{ position: 'absolute', top: 1, left: 3, fontSize: '9px', fontWeight: 'bold', color: '#444', lineHeight: 1 }}>View {idx+1}</span>
+                                          <div style={{ width: `${THUMB_NATIVE_W * thumbScale}px`, height: `${THUMB_NATIVE_H * thumbScale}px`, border: '1px dashed #ccc', borderRadius: '4px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', fontSize: '9px', color: '#999' }}>
+                                             {scene.panelBtnImageSrc ? (
+                                               <img src={scene.panelBtnImageSrc} alt={scene.panelBtnImage || '썸네일'} className="w-full h-full object-cover" />
+                                             ) : (scene.panelBtnImage || "mini.png")}
+                                          </div>
+                                       </button>
+                                     );
+                                   })}
                                  </div>
                                );
                              })()}
@@ -3226,8 +3524,11 @@ export default function App() {
                                          return (
                                             <div key={dialIdx} data-turn-idx={dialIdx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', marginBottom: '18px' }}>
                                                <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.8' }}>{String(turn.speaker || '')}:</div>
-                                               <div className="rp-turn-content" style={{ flex: 1, position: 'relative', paddingRight: '47px', minHeight: 40 }}>
-                                                  <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                               <div className="rp-turn-content" style={{ flex: 1, position: 'relative', paddingRight: '47px', minHeight: 40, paddingBottom: roleplayCTurnExtraPad[dialIdx] || 0 }}>
+                                                  {/* 💡 [단어 단위 줄바꿈] wordBreak:'break-word'+overflowWrap:'break-word'는 컨테이너
+                                                      폭을 넘는 긴 단어를 알파벳 중간에서 강제로 끊어버린다. 롤플레이 스크립트 영역
+                                                      너비를 기준으로 하되 항상 "단어" 단위로만 줄바꿈되도록 keep-all로 통일(사용자 요청). */}
+                                                  <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'keep-all', overflowWrap: 'normal' }}>
                                                      {lines.map((line, lineIdx) => (
                                                         <React.Fragment key={lineIdx}>
                                                            <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: line.hasBlank ? renderBracketAsEmpPreview(line.sentence || "영어 대사", line.blankColor) : (line.sentence || "영어 대사") }} />{' '}
@@ -3235,7 +3536,7 @@ export default function App() {
                                                      ))}
                                                   </div>
                                                   {roleplayCKorFragments.filter(f => f.turnIdx === dialIdx).map(f => (
-                                                     <div key={f.key} style={{ position: 'absolute', left: f.left, top: f.top, maxWidth: f.maxWidth, fontSize: '15px', color: '#06c', fontWeight: 'bold', lineHeight: '1.8' }}>{f.text}</div>
+                                                     <div key={f.key} style={{ position: 'absolute', left: f.left, top: f.top, maxWidth: f.maxWidth, fontFamily: 'NanumGothicBold, sans-serif', fontSize: '15px', color: '#06c', fontWeight: 'bold', lineHeight: '1.8', wordBreak: 'keep-all' }}>{f.text}</div>
                                                   ))}
                                                </div>
                                             </div>
@@ -3258,7 +3559,7 @@ export default function App() {
                                    onClick={() => setActiveViewIdx(Math.max(0, activeViewIdx - 1))}
                                    disabled={activeViewIdx === 0}
                                    style={{ width: 20, height: 31, border: 'none', background: 'transparent', cursor: activeViewIdx === 0 ? 'default' : 'pointer', opacity: activeViewIdx === 0 ? 0.3 : 1 }}
-                                   aria-label="이전 페이지"
+                                   aria-label="이전 View"
                                 >◀</button>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 10px' }}>
                                    {(pageData || []).map((page, idx) => (
@@ -3266,7 +3567,7 @@ export default function App() {
                                          key={page.id}
                                          onClick={() => setActiveViewIdx(idx)}
                                          style={{ width: 21, height: 21, borderRadius: '50%', border: 'none', backgroundColor: idx === activeViewIdx ? '#f6570d' : '#e7ddd3', color: '#fff', fontSize: 12, fontWeight: 'bold', cursor: 'pointer' }}
-                                         aria-label={`${idx + 1}페이지로 이동`}
+                                         aria-label={`View ${idx + 1}로 이동`}
                                       >{idx + 1}</button>
                                    ))}
                                 </div>
@@ -3274,7 +3575,7 @@ export default function App() {
                                    onClick={() => setActiveViewIdx(Math.min((pageData || []).length - 1, activeViewIdx + 1))}
                                    disabled={activeViewIdx === (pageData || []).length - 1}
                                    style={{ width: 20, height: 31, border: 'none', background: 'transparent', cursor: activeViewIdx === (pageData || []).length - 1 ? 'default' : 'pointer', opacity: activeViewIdx === (pageData || []).length - 1 ? 0.3 : 1 }}
-                                   aria-label="다음 페이지"
+                                   aria-label="다음 View"
                                 >▶</button>
                              </div>
                           </>
@@ -3299,8 +3600,11 @@ export default function App() {
                                       return (
                                          <div key={dialIdx} data-turn-idx={dialIdx} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', marginBottom: '18px' }}>
                                             <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#8c8c8c', width: '35px', fontFamily: 'sans-serif', lineHeight: '1.8' }}>{String(turn.speaker || '')}:</div>
-                                            <div className="rp-turn-content" style={{ flex: 1, position: 'relative', paddingRight: '47px', minHeight: 40 }}>
-                                               <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                            <div className="rp-turn-content" style={{ flex: 1, position: 'relative', paddingRight: '47px', minHeight: 40, paddingBottom: roleplayTurnExtraPad[dialIdx] || 0 }}>
+                                               {/* 💡 [단어 단위 줄바꿈] wordBreak:'break-word'+overflowWrap:'break-word'는 컨테이너
+                                                   폭을 넘는 긴 단어를 알파벳 중간에서 강제로 끊어버린다. 롤플레이 스크립트 영역
+                                                   너비를 기준으로 하되 항상 "단어" 단위로만 줄바꿈되도록 keep-all로 통일(사용자 요청). */}
+                                               <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#000', fontFamily: 'sans-serif', lineHeight: '1.8', whiteSpace: 'normal', wordBreak: 'keep-all', overflowWrap: 'normal' }}>
                                                   {lines.map((line, lineIdx) => (
                                                      <React.Fragment key={lineIdx}>
                                                         <span className="rp-line-eng" dangerouslySetInnerHTML={{ __html: line.hasBlank ? renderBracketAsEmpPreview(line.sentence || "영어 대사", line.blankColor) : (line.sentence || "영어 대사") }} />{' '}
@@ -3308,7 +3612,7 @@ export default function App() {
                                                   ))}
                                                </div>
                                                {roleplayKorFragments.filter(f => f.turnIdx === dialIdx).map(f => (
-                                                  <div key={f.key} style={{ position: 'absolute', left: f.left, top: f.top, maxWidth: f.maxWidth, fontSize: '15px', color: '#06c', fontWeight: 'bold', lineHeight: '1.8' }}>{f.text}</div>
+                                                  <div key={f.key} style={{ position: 'absolute', left: f.left, top: f.top, maxWidth: f.maxWidth, fontFamily: 'NanumGothicBold, sans-serif', fontSize: '15px', color: '#06c', fontWeight: 'bold', lineHeight: '1.8', wordBreak: 'keep-all' }}>{f.text}</div>
                                                ))}
                                             </div>
                                          </div>
@@ -3387,7 +3691,7 @@ export default function App() {
               지정하면 남는 60%가 자동으로 캔버스 쪽 몫이 되어 3:2 비율이 나온다. */}
           <div className="w-2/5 min-w-[560px] bg-white flex flex-col h-full shadow-[-4px_0_15px_rgba(0,0,0,0.1)] border-l border-gray-200 z-40 shrink-0">
             <div className="p-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
-              <h2 className="text-xl font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(Scene 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${resolveTypeDisplayName()})` : contentType === 'intro' ? '(Intro)' : `(View ${activeData.view})`}</span></h2>
+              <h2 className="text-xl font-bold text-gray-800">속성 편집 <span className="text-emerald-600">{contentType === 'roleplay_b' ? `(View 0${activeViewIdx + 1})` : (contentType === 'roleplay_a' || contentType === 'roleplay_c') ? `(${resolveTypeDisplayName()})` : contentType === 'intro' ? '(Intro)' : `(View ${activeData.view})`}</span></h2>
             </div>
             
             <div className="flex border-b border-gray-200 shrink-0">
@@ -3623,22 +3927,25 @@ export default function App() {
                   {contentType === 'roleplay_b' && (
                      <>
                         <div className="border-b border-emerald-200 pb-2 mb-3">
-                           <h3 className="font-bold text-base text-emerald-800">🖼️ 장면(Scene) 전용 리소스 설정</h3>
+                           <h3 className="font-bold text-base text-emerald-800">🖼️ 뷰(View) 전용 리소스 설정</h3>
                         </div>
                         <div className="space-y-3 bg-emerald-50/40 p-3 rounded-xl border border-emerald-100">
                            <div>
-                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">상황극 이미지 업로드</label>
+                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">상황극 메인 이미지 업로드</label>
                               <input type="file" accept="image/*" onChange={handleSceneImageUpload} className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 cursor-pointer" />
-                              <p className="text-[12px] text-gray-400 mt-1">업로드하면 캔버스 미리보기와 하단 씬 썸네일이 자동 갱신됩니다.</p>
+                              <p className="text-[12px] text-gray-400 mt-1">업로드하면 캔버스 미리보기가 자동 갱신됩니다. 업로드 전까지는 빈칸으로 표시됩니다.</p>
                            </div>
                            <div>
-                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">상황극 메인 이미지 파일명 (ZIP 내 경로용)</label>
-                              <input type="text" value={activeData.rolePlayImage || ''} onChange={e => handleSceneBPropChange('rolePlayImage', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg outline-none font-mono focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="ex: RolePlay_img_0.png" />
+                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">하단 썸네일(미니) 이미지 업로드</label>
+                              <input type="file" accept="image/*" onChange={handleSceneThumbnailUpload} className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:font-semibold file:bg-emerald-100 file:text-emerald-700 hover:file:bg-emerald-200 cursor-pointer" />
+                              <p className="text-[12px] text-gray-400 mt-1">메인 이미지와 별개로 직접 업로드해야 합니다(자동 생성 없음). 업로드 전까지는 빈칸으로 표시됩니다.</p>
                            </div>
-                           <div>
-                              <label className="block text-emerald-700 text-[13px] font-bold mb-1">하단 썸네일 이미지 파일명 (ZIP 내 경로용)</label>
-                              <input type="text" value={activeData.panelBtnImage || ''} onChange={e => handleSceneBPropChange('panelBtnImage', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg outline-none font-mono focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="ex: RolePlay_img_mini_0001.png" />
-                           </div>
+                           {/* 💡 [안내 문구만 유지] 파일명은 buildSceneImageFileNames가 View 번호 기준으로
+                               자동 채번하고, 사용자가 이 값을 따로 확인·수정할 UI는 두지 않는다(5-11 export
+                               스키마의 ZIP 내부 경로용 값일 뿐, 편집 중 굳이 노출할 필요가 없는 정보). */}
+                           <p className="text-[12px] text-emerald-600 leading-snug">
+                              ⚠️ 업로드한 원본 이미지의 실제 파일명과 관계없이, ZIP 추출 시 메인 이미지는 <span className="font-mono font-bold">RolePlay_img_N.png</span>, 썸네일은 <span className="font-mono font-bold">RolePlay_img_mini_000N.png</span>(N은 View 번호, 1부터)로 자동 변경되어 저장됩니다.
+                           </p>
                            <div>
                               <label className="block text-emerald-700 text-[13px] font-bold mb-1">하단 썸네일 접근성 라벨</label>
                               <input type="text" value={activeData.panelBtnLabel || ''} onChange={e => handleSceneBPropChange('panelBtnLabel', e.target.value)} className="w-full p-2 text-sm border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 bg-white" placeholder="클릭 시 해당 장면의 대화를 볼 수 있습니다." />
@@ -3873,10 +4180,10 @@ export default function App() {
                   {contentType === 'roleplay_c' && (
                      <>
                         <div className="border-b border-fuchsia-200 pb-2 mb-3">
-                           <h3 className="font-bold text-base text-fuchsia-800">📝 대화 스크립트 작성 (C형 · 현재 페이지 {activeViewIdx + 1})</h3>
+                           <h3 className="font-bold text-base text-fuchsia-800">📝 대화 스크립트 작성 (C형 · 현재 View {activeViewIdx + 1})</h3>
                         </div>
                         <ul className="text-[12px] leading-relaxed text-gray-400 -mt-2 mb-3 space-y-0.5 list-disc list-inside">
-                           <li>C형은 표 퀴즈 대신, 화면 하단 화살표/점(dots)으로 넘겨보는 여러 "페이지"(대화 갈래)로 구성됩니다. 페이지 전환·추가·삭제는 캔버스 상단 탭(Page 1, Page 2 ...)에서 합니다.</li>
+                           <li>C형은 표 퀴즈 대신, 화면 하단 화살표/점(dots)으로 넘겨보는 여러 "View"(대화 갈래)로 구성됩니다. View 전환·추가·삭제는 캔버스 상단 탭(View 1, View 2 ...)에서 합니다.</li>
                            <li>실제 콘텐츠에서는 하단의 [저장] 버튼을 누르면 그 자리에서 [다시 하기] 버튼으로 바뀌어 나타납니다. 캔버스는 최초 진입 상태([저장]만 표시)만 보여줍니다.</li>
                            <li>화면 하단 스크린리더용 안내문(hiddenText)은 "공통 설정" 탭의 지시문(instruction)을 그대로 재사용해 자동으로 만들어집니다. 지시문을 수정하면 함께 바뀝니다.</li>
                         </ul>
@@ -3964,19 +4271,8 @@ export default function App() {
                            })}
                            <button onClick={addSentence} className="w-full py-2 border-2 border-dashed border-fuchsia-300 text-fuchsia-600 text-sm font-bold rounded-xl hover:bg-fuchsia-100 transition">+ 새로운 턴(화자 차례) 추가</button>
                         </div>
-
-                        {/* 💡 페이지(대화 갈래) 관리 — B형 씬 관리 패턴과 동일하게, 현재 페이지 삭제는
-                            여기서도 가능하게 해서 캔버스 상단 탭까지 안 가도 되게 한다. */}
-                        <div className="border-t border-dashed border-gray-300 pt-4 mt-6 flex items-center justify-between">
-                           <span className="text-[13px] text-gray-500">현재 페이지({activeViewIdx + 1}/{(pageData || []).length})를 삭제하려면:</span>
-                           <button
-                              onClick={() => deletePageC(activeViewIdx)}
-                              disabled={(pageData || []).length <= 1}
-                              className="text-[13px] font-bold text-red-600 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
-                           >
-                              이 페이지 삭제
-                           </button>
-                        </div>
+                        {/* 💡 [수정] 페이지 삭제 버튼은 상단 View 탭 호버 ✕로 일원화(B형과 동일 패턴)해서
+                            제거함 — deletePageC는 이제 상단 탭에서만 호출된다. */}
                      </>
                   )}
 
